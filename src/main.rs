@@ -55,12 +55,14 @@ struct App {
     frames: u32,
     fps_since: Instant,
     fps: f32,
+    /// Fixed simulation time (for A/B screenshots).
+    freeze_time: Option<f32>,
 }
 
 impl App {
     fn new(params: OceanParams, bench: Option<Bench>) -> Self {
         let now = Instant::now();
-        App { gfx: None, params, show_panel: false, bench, start: now, last_frame: now, frames: 0, fps_since: now, fps: 0.0 }
+        App { gfx: None, params, show_panel: false, bench, start: now, last_frame: now, frames: 0, fps_since: now, fps: 0.0, freeze_time: None }
     }
 }
 
@@ -246,7 +248,8 @@ impl ApplicationHandler for App {
                 let now = Instant::now();
                 let dt = (now - self.last_frame).as_secs_f32();
                 self.last_frame = now;
-                gfx.render(&mut self.params, self.show_panel, self.fps, (now - self.start).as_secs_f32(), dt);
+                let t = self.freeze_time.unwrap_or((now - self.start).as_secs_f32());
+                gfx.render(&mut self.params, self.show_panel, self.fps, t, dt);
                 self.frames += 1;
                 let secs = self.fps_since.elapsed().as_secs_f32();
                 if secs >= 0.5 {
@@ -284,13 +287,14 @@ impl ApplicationHandler for App {
 
 /// `--set key=value` (repeatable) overrides any OceanParams field.
 /// `--bench N [--bench-out file]` renders N frames uncapped and writes a JSON report.
-/// `--panel` opens the settings panel at start.
-fn parse_args() -> anyhow::Result<(OceanParams, Option<Bench>, bool)> {
+/// `--panel` opens the settings panel at start; `--freeze-time S` pins the waves at time S.
+fn parse_args() -> anyhow::Result<(OceanParams, Option<Bench>, bool, Option<f32>)> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut overrides = Vec::new();
     let mut bench_frames = None;
     let mut bench_out = std::path::PathBuf::from("bench.json");
     let mut panel = false;
+    let mut freeze = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().cloned().ok_or_else(|| anyhow::anyhow!("{a} needs a value"));
@@ -299,6 +303,7 @@ fn parse_args() -> anyhow::Result<(OceanParams, Option<Bench>, bool)> {
             "--bench" => bench_frames = Some(value()?.parse::<u32>()?),
             "--bench-out" => bench_out = value()?.into(),
             "--panel" => panel = true,
+            "--freeze-time" => freeze = Some(value()?.parse::<f32>()?),
             other => anyhow::bail!("unknown argument {other:?}"),
         }
     }
@@ -307,15 +312,16 @@ fn parse_args() -> anyhow::Result<(OceanParams, Option<Bench>, bool)> {
         params.vsync = false;
         Bench { frames, out: bench_out, seen: 0, cpu_ms: Vec::new() }
     });
-    Ok((params, bench, panel))
+    Ok((params, bench, panel, freeze))
 }
 
 fn main() -> anyhow::Result<()> {
-    let (params, bench, panel) = parse_args()?;
+    let (params, bench, panel, freeze) = parse_args()?;
     let el = EventLoop::new()?;
     el.set_control_flow(ControlFlow::Poll);
     let mut app = App::new(params, bench);
     app.show_panel = panel;
+    app.freeze_time = freeze;
     el.run_app(&mut app)?;
     Ok(())
 }

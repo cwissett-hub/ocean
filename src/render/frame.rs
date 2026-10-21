@@ -11,6 +11,7 @@ use crate::render::gbuffer::{DEPTH_FORMAT, GBuffer, MATERIAL_FORMAT, MOTION_FORM
 use crate::render::ocean_mesh::{BASE_CELL_M, GRID, LEVELS, OceanMesh};
 use crate::render::post::{Post, exposure_ev, exposure_multiplier};
 use crate::render::reflect::ReflectionPass;
+use crate::render::rt_scene::{RtPatchConfig, RtScene, patch_origin};
 use crate::gpu::shaders::ShaderLibrary;
 use crate::render::shade::ShadePass;
 use crate::render::sky::{SkyLuts, sun_direction};
@@ -94,6 +95,8 @@ pub struct Renderer {
     spectrum_key: SpectrumKey,
     stats: SpectrumStats,
     timer: GpuTimer,
+    /// Ray-tracing scene; None when the device has no ray query.
+    rt: Option<RtScene>,
     buoy: BuoyPass,
     buoy_body: BuoyBody,
     query: WaveQuery,
@@ -240,11 +243,19 @@ impl Renderer {
         let reflections = ReflectionPass::new(d, lib, &ctx.queue, &uniforms, &gbuffer);
         let shade = ShadePass::new(d, lib, &uniforms, &sky, &gbuffer, reflections.views());
         let post = Post::new(d, lib, format, &gbuffer);
-        let buoy = BuoyPass::new(d, &ctx.queue, lib, &layout, &build_buoy_mesh());
+        let buoy_mesh = build_buoy_mesh();
+        let buoy = BuoyPass::new(d, &ctx.queue, lib, &layout, &buoy_mesh);
         let query = WaveQuery::new(ctx, lib, &ocean);
         let camera = FixedCamera { yaw_deg: params.sun_azimuth_deg, ..Default::default() };
         let anchor = buoy_anchor(&camera.pose());
+        let mut reflections = reflections;
+        let rt = ctx.rt_available.then(|| {
+            let scene = RtScene::new(ctx, lib, &ocean, buoy.geometry(), buoy_mesh.vertices.len() as u32, RtPatchConfig::default());
+            reflections.enable_rt(d, lib, &sky, &uniforms, &gbuffer, &scene);
+            scene
+        });
         Renderer {
+            rt,
             buoy,
             buoy_body: BuoyBody::at(Vec3::new(anchor.x, 0.0, anchor.y)),
             query,
@@ -303,7 +314,7 @@ impl Renderer {
         let want = internal_extent(self.surface_extent, scale);
         if want != self.gbuffer.extent {
             self.gbuffer = GBuffer::new(&self.device, want);
-            self.reflections.resize(&self.device, &self.uniforms, &self.gbuffer);
+            self.reflections.resize(&self.device, &self.uniforms, &self.gbuffer, self.rt.as_ref());
             self.shade.rebind(&self.device, &self.uniforms, &self.gbuffer, self.reflections.views());
             self.post.resize(&self.device, &self.gbuffer);
             self.prev_view_proj = None;
@@ -372,6 +383,12 @@ impl Renderer {
         self.ocean.update(&mut enc, t % REPEAT_PERIOD_S, params.choppiness, foam_params(&params), dt);
         self.query.record(&mut enc);
         self.timer.mark(&mut enc, "ocean sim");
+        if let Some(rt) = &mut self.rt {
+            let origin = patch_origin(cam.position, cam.forward, &rt.config());
+            let (vb, ib, _) = self.buoy.geometry();
+            rt.record(&mut enc, origin, self.buoy_body.transform(), (vb, ib));
+        }
+        self.timer.mark(&mut enc, "rt build");
         self.sky.update(&mut enc, sun);
         self.timer.mark(&mut enc, "sky");
         self.buoy.record_opaque(&mut enc, &self.gbuffer, &self.ocean_bind_groups[self.ocean.foam_index()]);
@@ -402,7 +419,7 @@ impl Renderer {
             self.buoy.draw_gbuffer(&mut pass, &self.ocean_bind_groups[self.ocean.foam_index()]);
         }
         self.timer.mark(&mut enc, "gbuffer");
-        self.reflections.record(&mut enc, params.reflection_mode);
+        self.reflections.record(&mut enc, params.reflection_mode, &self.sky);
         self.timer.mark(&mut enc, "reflections");
         self.shade.record(&mut enc, &self.gbuffer, &self.sky, self.reflections.index());
         self.gbuffer.record_history(&mut enc);

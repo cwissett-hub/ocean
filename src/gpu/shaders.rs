@@ -21,6 +21,8 @@ pub const SHADERS: &[&str] = &[
     "rq_smoke",
     "wave_query",
     "buoy_gbuffer",
+    "rt_patch",
+    "reflect_rt",
 ];
 
 const EMBEDDED: &[(&str, &str)] = &[
@@ -37,6 +39,9 @@ const EMBEDDED: &[(&str, &str)] = &[
     ("rq_smoke", include_str!("../../shaders/rq_smoke.wgsl")),
     ("wave_query", include_str!("../../shaders/wave_query.wgsl")),
     ("buoy_gbuffer", include_str!("../../shaders/buoy_gbuffer.wgsl")),
+    ("rt_patch", include_str!("../../shaders/rt_patch.wgsl")),
+    ("surfaces", include_str!("../../shaders/surfaces.wgsl")),
+    ("reflect_rt", include_str!("../../shaders/reflect_rt.wgsl")),
     ("buoy_common", include_str!("../../shaders/buoy_common.wgsl")),
     ("frame_common", include_str!("../../shaders/frame_common.wgsl")),
     ("sky_common", include_str!("../../shaders/sky_common.wgsl")),
@@ -55,6 +60,26 @@ pub fn validate(src: &str) -> Result<(), String> {
         .validate(&module)
         .map(|_| ())
         .map_err(|e| e.emit_to_string(src))
+}
+
+/// Expands includes, then hoists `enable` directives to the top (WGSL wants them before any
+/// declaration, and includes land above the including file's own lines).
+fn expanded(files: &HashMap<String, String>, name: &str) -> Result<String, String> {
+    let mut body = String::new();
+    expand(files, name, &mut Vec::new(), &mut body)?;
+    let (enables, rest): (Vec<&str>, Vec<&str>) = body.lines().partition(|l| l.trim_start().starts_with("enable "));
+    let mut out = String::new();
+    for e in enables {
+        if !out.contains(e.trim()) {
+            out.push_str(e.trim());
+            out.push('\n');
+        }
+    }
+    for l in rest {
+        out.push_str(l);
+        out.push('\n');
+    }
+    Ok(out)
 }
 
 fn expand(files: &HashMap<String, String>, name: &str, seen: &mut Vec<String>, out: &mut String) -> Result<(), String> {
@@ -111,9 +136,7 @@ impl ShaderLibrary {
 
     /// Fully expanded source of a top-level shader.
     pub fn source(&self, name: &str) -> Result<String, String> {
-        let mut out = String::new();
-        expand(&self.files, name, &mut Vec::new(), &mut out)?;
-        Ok(out)
+        expanded(&self.files, name)
     }
 
     /// Re-reads every shader from disk. Returns (shader, error) for each one that failed; on
@@ -125,9 +148,8 @@ impl ShaderLibrary {
         let errors: Vec<(String, String)> = SHADERS
             .iter()
             .filter_map(|name| {
-                let mut out = String::new();
-                expand(&candidate, name, &mut Vec::new(), &mut out)
-                    .and_then(|_| validate(&out))
+                expanded(&candidate, name)
+                    .and_then(|out| validate(&out))
                     .err()
                     .map(|e| (name.to_string(), e))
             })
@@ -189,6 +211,13 @@ mod tests {
         assert!(errors.iter().any(|(n, _)| n == "fft"), "{errors:?}");
         assert_eq!(lib.source("fft").unwrap(), before, "broken shader replaced the working one");
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn enable_directives_are_hoisted_above_includes() {
+        let src = ShaderLibrary::embedded().source("reflect_rt").unwrap();
+        assert!(src.trim_start().starts_with("enable wgpu_ray_query;"), "{}", &src[..80]);
+        assert_eq!(src.matches("enable wgpu_ray_query;").count(), 1);
     }
 
     #[test]

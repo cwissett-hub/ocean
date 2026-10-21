@@ -4,6 +4,8 @@
 use crate::gpu::extent::half_extent;
 use crate::params::ReflectionMode;
 use crate::render::gbuffer::GBuffer;
+use crate::render::rt_scene::RtScene;
+use crate::render::sky::SkyLuts;
 use crate::gpu::shaders::ShaderLibrary;
 
 /// History weight for temporal accumulation: none without valid history, 0.9 for still
@@ -20,7 +22,7 @@ pub fn temporal_blend(history_valid: bool, motion_px: f32) -> f32 {
 struct ReflectParams {
     jitter: [u32; 2],
     history_valid: u32,
-    _pad: u32,
+    patch_grid: u32,
 }
 
 /// 2x2 sample pattern cycled per frame, so accumulation covers every full-res pixel.
@@ -40,6 +42,8 @@ pub struct ReflectionPass {
     frame: u32,
     history_valid: bool,
     half: (u32, u32),
+    rt: Option<RtPath>,
+    patch_grid: u32,
 }
 
 fn storage_target(d: &wgpu::Device, label: &str, (w, h): (u32, u32)) -> wgpu::TextureView {
@@ -95,6 +99,8 @@ impl ReflectionPass {
             frame: 0,
             history_valid: false,
             half,
+            rt: None,
+            patch_grid: 0,
         }
     }
 
@@ -150,26 +156,105 @@ impl ReflectionPass {
     }
 
     /// Call after the G-buffer is recreated; history restarts.
-    pub fn resize(&mut self, d: &wgpu::Device, frame: &wgpu::Buffer, g: &GBuffer) {
+    pub fn resize(&mut self, d: &wgpu::Device, frame: &wgpu::Buffer, g: &GBuffer, scene: Option<&RtScene>) {
         (self.raw, self.history, self.ssr_group, self.resolve_groups, self.half) =
             Self::targets(d, &self.ssr, &self.resolve, &self.params, frame, g);
+        if let (Some(rt), Some(scene)) = (&mut self.rt, scene) {
+            rt.group = rt_group(d, &rt.layout, frame, g, &self.raw, &self.params, scene);
+        }
         self.history_valid = false;
         self.current = 0;
     }
 
-    /// Records this frame's reflections. `mode` is honoured from Task 9; until then ray-traced
-    /// mode renders screen-space reflections too.
-    pub fn record(&mut self, enc: &mut wgpu::CommandEncoder, _mode: ReflectionMode) {
+    /// Adds the hardware ray-traced path (only on devices with ray query).
+    pub fn enable_rt(&mut self, d: &wgpu::Device, lib: &ShaderLibrary, sky: &SkyLuts, frame: &wgpu::Buffer, g: &GBuffer, scene: &RtScene) {
+        let cs = wgpu::ShaderStages::COMPUTE;
+        let entry = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: cs, ty, count: None };
+        let uniform = wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None };
+        let tex = |sample_type| wgpu::BindingType::Texture { sample_type, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false };
+        let layout = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("reflect rt"),
+            entries: &[
+                entry(0, uniform),
+                entry(1, tex(wgpu::TextureSampleType::Depth)),
+                entry(2, tex(wgpu::TextureSampleType::Float { filterable: false })),
+                entry(
+                    3,
+                    wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                ),
+                entry(4, uniform),
+                entry(5, wgpu::BindingType::AccelerationStructure { vertex_return: false }),
+                entry(
+                    6,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
+                entry(
+                    7,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                ),
+                entry(8, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+            ],
+        });
+        let pl = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("reflect rt"),
+            bind_group_layouts: &[Some(&layout), Some(sky.layout())],
+            immediate_size: 0,
+        });
+        let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("reflect_rt"),
+            source: wgpu::ShaderSource::Wgsl(lib.source("reflect_rt").expect("shader source").into()),
+        });
+        let pipeline = d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("reflect rt"),
+            layout: Some(&pl),
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let group = rt_group(d, &layout, frame, g, &self.raw, &self.params, scene);
+        self.patch_grid = scene.config().grid;
+        self.rt = Some(RtPath { pipeline, layout, group });
+    }
+
+    pub fn rt_enabled(&self) -> bool {
+        self.rt.is_some()
+    }
+
+    /// Records this frame's reflections: ray traced when asked and available, else
+    /// screen-space; then the temporal resolve.
+    pub fn record(&mut self, enc: &mut wgpu::CommandEncoder, mode: ReflectionMode, sky: &SkyLuts) {
         let p = ReflectParams {
             jitter: JITTER[(self.frame % 4) as usize],
             history_valid: self.history_valid as u32,
-            _pad: 0,
+            patch_grid: self.patch_grid,
         };
         self.queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&p));
         let groups = (self.half.0.div_ceil(8), self.half.1.div_ceil(8));
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("reflections"), timestamp_writes: None });
-        pass.set_pipeline(&self.ssr);
-        pass.set_bind_group(0, &self.ssr_group, &[]);
+        match (&self.rt, mode) {
+            (Some(rt), ReflectionMode::Rt) => {
+                pass.set_pipeline(&rt.pipeline);
+                pass.set_bind_group(0, &rt.group, &[]);
+                pass.set_bind_group(1, sky.bind_group(), &[]);
+            }
+            _ => {
+                pass.set_pipeline(&self.ssr);
+                pass.set_bind_group(0, &self.ssr_group, &[]);
+            }
+        }
         pass.dispatch_workgroups(groups.0, groups.1, 1);
         pass.set_pipeline(&self.resolve);
         pass.set_bind_group(0, &self.resolve_groups[self.current], &[]);
@@ -179,6 +264,7 @@ impl ReflectionPass {
         self.history_valid = true;
     }
 
+
     pub fn views(&self) -> &[wgpu::TextureView; 2] {
         &self.history
     }
@@ -187,6 +273,39 @@ impl ReflectionPass {
     pub fn index(&self) -> usize {
         self.current
     }
+}
+
+struct RtPath {
+    pipeline: wgpu::ComputePipeline,
+    layout: wgpu::BindGroupLayout,
+    group: wgpu::BindGroup,
+}
+
+fn rt_group(
+    d: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    frame: &wgpu::Buffer,
+    g: &GBuffer,
+    raw: &wgpu::TextureView,
+    params: &wgpu::Buffer,
+    scene: &RtScene,
+) -> wgpu::BindGroup {
+    use wgpu::BindingResource as B;
+    d.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("reflect rt"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: frame.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: B::TextureView(&g.depth) },
+            wgpu::BindGroupEntry { binding: 2, resource: B::TextureView(&g.normal) },
+            wgpu::BindGroupEntry { binding: 3, resource: B::TextureView(raw) },
+            wgpu::BindGroupEntry { binding: 4, resource: params.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 5, resource: scene.tlas().as_binding() },
+            wgpu::BindGroupEntry { binding: 6, resource: scene.patch_vertices().as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 7, resource: B::TextureView(scene.derivatives()) },
+            wgpu::BindGroupEntry { binding: 8, resource: B::Sampler(scene.wave_sampler()) },
+        ],
+    })
 }
 
 #[cfg(test)]
@@ -225,3 +344,4 @@ mod tests {
         assert_eq!(temporal_blend(true, f32::NAN), 0.0);
     }
 }
+

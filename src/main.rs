@@ -6,6 +6,7 @@ use std::time::Instant;
 use ocean::gpu::adapter::GpuContext;
 use ocean::gpu::extent::render_extent;
 use ocean::params::OceanParams;
+use ocean::render::frame::Renderer;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
@@ -25,15 +26,23 @@ struct Gfx {
     ctx: GpuContext,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
-    pipeline: wgpu::RenderPipeline,
+    renderer: Renderer,
 }
 
-#[derive(Default)]
 struct App {
     gfx: Option<Gfx>,
     params: OceanParams,
+    start: Instant,
+    last_frame: Instant,
     frames: u32,
-    fps_since: Option<Instant>,
+    fps_since: Instant,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        let now = Instant::now();
+        App { gfx: None, params: OceanParams::default(), start: now, last_frame: now, frames: 0, fps_since: now }
+    }
 }
 
 impl Gfx {
@@ -41,12 +50,7 @@ impl Gfx {
         let (ctx, surface) = GpuContext::new_for_surface(window.clone())?;
         let size = window.inner_size();
         let caps = surface.get_capabilities(&ctx.adapter);
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| f.is_srgb())
-            .unwrap_or(caps.formats[0]);
+        let format = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -59,32 +63,8 @@ impl Gfx {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&ctx.device, &config);
-        let module = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("gradient"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/gradient.wgsl").into()),
-        });
-        let pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("gradient"),
-            layout: None,
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(format.into())],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-        Ok(Gfx { window, ctx, surface, config, pipeline })
+        let renderer = Renderer::new(&ctx, format, (config.width, config.height), params);
+        Ok(Gfx { window, ctx, surface, config, renderer })
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -94,9 +74,10 @@ impl Gfx {
         self.config.width = w;
         self.config.height = h;
         self.surface.configure(&self.ctx.device, &self.config);
+        self.renderer.resize((w, h));
     }
 
-    fn render(&mut self, params: &OceanParams) {
+    fn render(&mut self, params: &OceanParams, t: f32, dt: f32) {
         let size = self.window.inner_size();
         if render_extent(size.width, size.height, params.render_scale).is_none() {
             return;
@@ -109,22 +90,7 @@ impl Gfx {
             }
         };
         let view = frame.texture.create_view(&Default::default());
-        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
-        {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("gradient"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
-                })],
-                ..Default::default()
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.draw(0..3, 0..1);
-        }
-        self.ctx.queue.submit([enc.finish()]);
+        self.renderer.render(&view, params, t, dt);
         self.ctx.queue.present(frame);
     }
 }
@@ -157,15 +123,17 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::Resized(s) => gfx.resize(s.width, s.height),
             WindowEvent::RedrawRequested => {
-                gfx.render(&self.params);
+                let now = Instant::now();
+                let dt = (now - self.last_frame).as_secs_f32();
+                self.last_frame = now;
+                gfx.render(&self.params, (now - self.start).as_secs_f32(), dt);
                 self.frames += 1;
-                let since = *self.fps_since.get_or_insert_with(Instant::now);
-                let secs = since.elapsed().as_secs_f32();
+                let secs = self.fps_since.elapsed().as_secs_f32();
                 if secs >= 0.5 {
                     let fps = self.frames as f32 / secs;
                     gfx.window.set_title(&format!("Ocean — {} — {fps:.0} fps", gfx.ctx.adapter_name));
                     self.frames = 0;
-                    self.fps_since = Some(Instant::now());
+                    self.fps_since = Instant::now();
                 }
                 gfx.window.request_redraw();
             }

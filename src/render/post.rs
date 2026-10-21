@@ -46,7 +46,7 @@ struct Chain {
 }
 
 impl Post {
-    pub fn new(d: &wgpu::Device, output: wgpu::TextureFormat, g: &GBuffer) -> Post {
+    pub fn new(d: &wgpu::Device, lib: &crate::gpu::shaders::ShaderLibrary, output: wgpu::TextureFormat, g: &GBuffer) -> Post {
         let tex = |binding| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -87,7 +87,7 @@ impl Post {
         });
         let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("post"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/post.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(lib.source("post").expect("shader source").into()),
         });
         let pipeline = |label, fs, format: wgpu::TextureFormat, blend: Option<wgpu::BlendState>| {
             d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {

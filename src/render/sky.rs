@@ -11,14 +11,6 @@ pub fn sun_direction(elevation_deg: f32, azimuth_deg: f32) -> Vec3 {
     Vec3::new(az.sin() * el.cos(), el.sin(), az.cos() * el.cos())
 }
 
-pub const SKY_COMMON: &str = include_str!("../../shaders/sky_common.wgsl");
-pub const SKY_SAMPLE: &str = include_str!("../../shaders/sky_sample.wgsl");
-
-/// Source for a shader that samples the sky: shared constants + group-1 bindings + body.
-pub fn with_sky(body: &str) -> String {
-    format!("{SKY_COMMON}\n{SKY_SAMPLE}\n{body}")
-}
-
 const TRANSMITTANCE: (u32, u32) = (256, 64);
 const MULTISCATTER: (u32, u32) = (32, 32);
 const SKY_VIEW: (u32, u32) = (192, 108);
@@ -52,7 +44,7 @@ fn groups((w, h): (u32, u32)) -> (u32, u32) {
 }
 
 impl SkyLuts {
-    pub fn new(ctx: &crate::gpu::adapter::GpuContext) -> SkyLuts {
+    pub fn new(ctx: &crate::gpu::adapter::GpuContext, lib: &crate::gpu::shaders::ShaderLibrary) -> SkyLuts {
         let d = &ctx.device;
         let (_t, tv) = lut(d, "sky transmittance", TRANSMITTANCE);
         let (_m, mv) = lut(d, "sky multiscatter", MULTISCATTER);
@@ -79,7 +71,7 @@ impl SkyLuts {
         let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sky_luts"),
             source: wgpu::ShaderSource::Wgsl(
-                format!("{SKY_COMMON}\n{}", include_str!("../../shaders/sky_luts.wgsl")).into(),
+                lib.source("sky_luts").expect("shader source").into(),
             ),
         });
         use wgpu::BindingResource as B;

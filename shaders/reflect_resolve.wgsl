@@ -1,3 +1,4 @@
+// #include frame_common.wgsl
 // Temporal accumulation of the half-res reflection (SSR or ray traced) with a 3x3
 // neighbourhood clamp against ghosting. Blend weight mirrors render::reflect::temporal_blend.
 // Needs frame_common.wgsl.

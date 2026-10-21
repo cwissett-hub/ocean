@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = { version = "1" }
 bytemuck = { version = "1.25", features = ["derive"] }
-egui = { version = "0.37.0" }
+egui = { version = "0.37.0", features = ["default_fonts"] }
 egui-wgpu = { version = "0.37.0" }
 egui-winit = { version = "0.37.0" }
 glam = { version = "0.34.1" }

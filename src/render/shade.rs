@@ -1,9 +1,8 @@
 //! Full-screen composite of sky and water into the HDR target.
 
 use crate::render::gbuffer::{GBuffer, HDR_FORMAT};
-use crate::render::sky::{SkyLuts, with_sky};
-
-pub const FRAME_COMMON: &str = include_str!("../../shaders/frame_common.wgsl");
+use crate::gpu::shaders::ShaderLibrary;
+use crate::render::sky::SkyLuts;
 
 pub struct ShadePass {
     pipeline: wgpu::RenderPipeline,
@@ -27,7 +26,14 @@ fn tex_entry(binding: u32, sample_type: wgpu::TextureSampleType) -> wgpu::BindGr
 }
 
 impl ShadePass {
-    pub fn new(d: &wgpu::Device, frame: &wgpu::Buffer, sky: &SkyLuts, g: &GBuffer, refl: &[wgpu::TextureView; 2]) -> ShadePass {
+    pub fn new(
+        d: &wgpu::Device,
+        lib: &ShaderLibrary,
+        frame: &wgpu::Buffer,
+        sky: &SkyLuts,
+        g: &GBuffer,
+        refl: &[wgpu::TextureView; 2],
+    ) -> ShadePass {
         let float = wgpu::TextureSampleType::Float { filterable: false };
         let layout = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shade"),
@@ -59,7 +65,7 @@ impl ShadePass {
             bind_group_layouts: &[Some(&layout), Some(sky.layout())],
             immediate_size: 0,
         });
-        let src = format!("{FRAME_COMMON}\n{}", with_sky(include_str!("../../shaders/shade.wgsl")));
+        let src = lib.source("shade").expect("shader source");
         let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shade"),
             source: wgpu::ShaderSource::Wgsl(src.into()),

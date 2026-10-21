@@ -1,6 +1,7 @@
 //! The GPU FFT ocean must reproduce the CPU reference field. Headless, no window.
 
 use ocean::gpu::adapter::GpuContext;
+use ocean::gpu::shaders::ShaderLibrary;
 use ocean::params::OceanParams;
 use ocean::waves::cpu_ocean::CpuOcean;
 use ocean::waves::gpu_ocean::GpuOcean;
@@ -12,7 +13,7 @@ fn gpu_matches_cpu_reference() {
     let p = OceanParams::default();
     let spectrum = build_spectrum(&p, 42);
     let cpu = CpuOcean::new(&spectrum, p.choppiness);
-    let mut gpu = GpuOcean::new(&ctx, &spectrum);
+    let mut gpu = GpuOcean::new(&ctx, &ShaderLibrary::embedded(), &spectrum);
     let t = 3.7;
     let mut enc = ctx.device.create_command_encoder(&Default::default());
     gpu.update(&mut enc, t, p.choppiness, ocean::waves::foam::foam_params(&p), 0.0);
@@ -44,7 +45,7 @@ fn foam_accumulates_in_strong_wind_and_not_in_calm() {
     let ctx = GpuContext::new_headless().expect("gpu");
     let frac = |wind: f32| {
         let p = OceanParams { wind_speed: wind, ..Default::default() };
-        let mut gpu = GpuOcean::new(&ctx, &build_spectrum(&p, 42));
+        let mut gpu = GpuOcean::new(&ctx, &ShaderLibrary::embedded(), &build_spectrum(&p, 42));
         for i in 0..120 {
             let mut enc = ctx.device.create_command_encoder(&Default::default());
             gpu.update(&mut enc, i as f32 / 60.0, p.choppiness, ocean::waves::foam::foam_params(&p), 1.0 / 60.0);

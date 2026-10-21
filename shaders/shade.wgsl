@@ -1,3 +1,6 @@
+// #include frame_common.wgsl
+// #include sky_common.wgsl
+// #include sky_sample.wgsl
 // Full-screen composite into the HDR target: sky where nothing was drawn, physically based
 // water elsewhere. Needs frame_common.wgsl, sky_common.wgsl, sky_sample.wgsl.
 

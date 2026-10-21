@@ -1,3 +1,4 @@
+// #include sky_common.wgsl
 // Hillaire 2020, "A Scalable and Production Ready Sky and Atmosphere Rendering Technique".
 // Distances in km. Sky radiance is for unit solar illuminance (exposure scales it later).
 // Entry points: transmittance (256x64), multiscatter (32x32), sky_view (192x108).

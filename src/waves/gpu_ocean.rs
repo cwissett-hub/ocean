@@ -2,6 +2,7 @@
 //! displacement and derivative textures that every later pass samples.
 
 use crate::gpu::adapter::GpuContext;
+use crate::gpu::shaders::ShaderLibrary;
 use crate::waves::foam::FoamParams;
 use crate::waves::spectrum::{CASCADE_SIZES_M, N, SpectrumSet};
 
@@ -101,7 +102,8 @@ fn compute(
 }
 
 impl GpuOcean {
-    pub fn new(ctx: &GpuContext, spectrum: &SpectrumSet) -> GpuOcean {
+    pub fn new(ctx: &GpuContext, lib: &ShaderLibrary, spectrum: &SpectrumSet) -> GpuOcean {
+        let src = |n: &str| lib.source(n).expect("shader source");
         let d = &ctx.device;
         use wgpu::TextureFormat as F;
         use wgpu::TextureUsages as U;
@@ -128,17 +130,17 @@ impl GpuOcean {
         let update = compute(
             d,
             "spectrum_update",
-            include_str!("../../shaders/spectrum_update.wgsl"),
+            &src("spectrum_update"),
             &[],
             &[T(&h0v), T(&omv), T(&v[0]), T(&v[1]), params.as_entire_binding()],
         );
-        let fft_src = include_str!("../../shaders/fft.wgsl");
+        let fft_src = &src("fft");
         let fft_h = compute(d, "fft rows", fft_src, &[("HORIZONTAL", 1.0)], &[T(&v[0]), T(&v[1]), T(&v[2]), T(&v[3])]);
         let fft_v = compute(d, "fft cols", fft_src, &[("HORIZONTAL", 0.0)], &[T(&v[2]), T(&v[3]), T(&v[0]), T(&v[1])]);
         let assemble = compute(
             d,
             "assemble",
-            include_str!("../../shaders/assemble.wgsl"),
+            &src("assemble"),
             &[],
             &[T(&v[0]), T(&v[1]), T(&dispv), T(&derv)],
         );
@@ -164,7 +166,7 @@ impl GpuOcean {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let foam_src = include_str!("../../shaders/foam.wgsl");
+        let foam_src = &src("foam");
         let foam_pass = |i: usize| {
             compute(
                 d,

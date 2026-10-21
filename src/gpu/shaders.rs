@@ -1,0 +1,196 @@
+//! WGSL sources: embedded in the exe, overridden by `shaders/*.wgsl` on disk (next to the exe
+//! or in the working directory) so F5 can hot-reload them. `// #include name.wgsl` lines are
+//! expanded (each file at most once). Reloads are validated with naga and applied all-or-
+//! nothing, so a typo never replaces a working shader.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+/// Top-level shaders (one per pipeline family).
+pub const SHADERS: &[&str] = &[
+    "spectrum_update",
+    "fft",
+    "assemble",
+    "foam",
+    "ocean_gbuffer",
+    "sky_luts",
+    "shade",
+    "reflect_ssr",
+    "reflect_resolve",
+    "post",
+    "rq_smoke",
+];
+
+const EMBEDDED: &[(&str, &str)] = &[
+    ("spectrum_update", include_str!("../../shaders/spectrum_update.wgsl")),
+    ("fft", include_str!("../../shaders/fft.wgsl")),
+    ("assemble", include_str!("../../shaders/assemble.wgsl")),
+    ("foam", include_str!("../../shaders/foam.wgsl")),
+    ("ocean_gbuffer", include_str!("../../shaders/ocean_gbuffer.wgsl")),
+    ("sky_luts", include_str!("../../shaders/sky_luts.wgsl")),
+    ("shade", include_str!("../../shaders/shade.wgsl")),
+    ("reflect_ssr", include_str!("../../shaders/reflect_ssr.wgsl")),
+    ("reflect_resolve", include_str!("../../shaders/reflect_resolve.wgsl")),
+    ("post", include_str!("../../shaders/post.wgsl")),
+    ("rq_smoke", include_str!("../../shaders/rq_smoke.wgsl")),
+    ("frame_common", include_str!("../../shaders/frame_common.wgsl")),
+    ("sky_common", include_str!("../../shaders/sky_common.wgsl")),
+    ("sky_sample", include_str!("../../shaders/sky_sample.wgsl")),
+];
+
+pub struct ShaderLibrary {
+    dir: Option<PathBuf>,
+    files: HashMap<String, String>,
+}
+
+/// Checks a fully expanded WGSL source the way wgpu will (parse + validate).
+pub fn validate(src: &str) -> Result<(), String> {
+    let module = naga::front::wgsl::parse_str(src).map_err(|e| e.emit_to_string(src))?;
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+        .validate(&module)
+        .map(|_| ())
+        .map_err(|e| e.emit_to_string(src))
+}
+
+fn expand(files: &HashMap<String, String>, name: &str, seen: &mut Vec<String>, out: &mut String) -> Result<(), String> {
+    if seen.iter().any(|s| s == name) {
+        return Ok(());
+    }
+    seen.push(name.to_string());
+    let src = files.get(name).ok_or_else(|| format!("no shader named {name:?}"))?;
+    for line in src.lines() {
+        if let Some(inc) = line.trim().strip_prefix("// #include ") {
+            expand(files, inc.trim().trim_end_matches(".wgsl"), seen, out)?;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    Ok(())
+}
+
+impl ShaderLibrary {
+    /// Only the copies compiled into the exe.
+    pub fn embedded() -> ShaderLibrary {
+        ShaderLibrary { dir: None, files: EMBEDDED.iter().map(|(n, s)| (n.to_string(), s.to_string())).collect() }
+    }
+
+    /// Embedded copies overridden by whatever `dir` holds.
+    pub fn with_dir(dir: PathBuf) -> ShaderLibrary {
+        let mut lib = ShaderLibrary::embedded();
+        lib.files.extend(lib.read_disk_from(&dir));
+        lib.dir = Some(dir);
+        lib
+    }
+
+    /// `shaders/` next to the exe, else in the working directory, else embedded only.
+    pub fn discover() -> ShaderLibrary {
+        let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("shaders")));
+        let cwd = std::env::current_dir().ok().map(|d| d.join("shaders"));
+        match exe_dir.into_iter().chain(cwd).find(|d| d.is_dir()) {
+            Some(d) => ShaderLibrary::with_dir(d),
+            None => ShaderLibrary::embedded(),
+        }
+    }
+
+    pub fn dir(&self) -> Option<&PathBuf> {
+        self.dir.as_ref()
+    }
+
+    fn read_disk_from(&self, dir: &std::path::Path) -> HashMap<String, String> {
+        EMBEDDED
+            .iter()
+            .filter_map(|(n, _)| std::fs::read_to_string(dir.join(format!("{n}.wgsl"))).ok().map(|s| (n.to_string(), s)))
+            .collect()
+    }
+
+    /// Fully expanded source of a top-level shader.
+    pub fn source(&self, name: &str) -> Result<String, String> {
+        let mut out = String::new();
+        expand(&self.files, name, &mut Vec::new(), &mut out)?;
+        Ok(out)
+    }
+
+    /// Re-reads every shader from disk. Returns (shader, error) for each one that failed; on
+    /// any failure nothing changes.
+    pub fn reload_all(&mut self) -> Vec<(String, String)> {
+        let Some(dir) = self.dir.clone() else { return Vec::new() };
+        let mut candidate = self.files.clone();
+        candidate.extend(self.read_disk_from(&dir));
+        let errors: Vec<(String, String)> = SHADERS
+            .iter()
+            .filter_map(|name| {
+                let mut out = String::new();
+                expand(&candidate, name, &mut Vec::new(), &mut out)
+                    .and_then(|_| validate(&out))
+                    .err()
+                    .map(|e| (name.to_string(), e))
+            })
+            .collect();
+        if errors.is_empty() {
+            self.files = candidate;
+        }
+        errors
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("ocean-shader-test-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn every_shipped_shader_validates() {
+        let lib = ShaderLibrary::embedded();
+        for name in SHADERS {
+            let src = lib.source(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            validate(&src).unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+    }
+
+    #[test]
+    fn includes_are_expanded_once_each() {
+        let lib = ShaderLibrary::embedded();
+        let src = lib.source("shade").unwrap();
+        assert_eq!(src.matches("struct Frame {").count(), 1);
+        assert!(src.contains("fn sky_radiance"));
+        assert!(!src.contains("#include"));
+    }
+
+    #[test]
+    fn disk_copy_overrides_embedded() {
+        let d = temp_dir("override");
+        let body = "@compute @workgroup_size(1) fn main() {}\n";
+        std::fs::write(d.join("fft.wgsl"), body).unwrap();
+        let lib = ShaderLibrary::with_dir(d.clone());
+        assert_eq!(lib.source("fft").unwrap(), body);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn reload_rejects_invalid_wgsl() {
+        let d = temp_dir("reload");
+        std::fs::write(d.join("fft.wgsl"), "@compute @workgroup_size(1) fn main() {}\n").unwrap();
+        let mut lib = ShaderLibrary::with_dir(d.clone());
+        let before = lib.source("fft").unwrap();
+        std::fs::write(d.join("fft.wgsl"), "fn main( { this is not wgsl").unwrap();
+        let errors = lib.reload_all();
+        assert!(errors.iter().any(|(n, _)| n == "fft"), "{errors:?}");
+        assert_eq!(lib.source("fft").unwrap(), before, "broken shader replaced the working one");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn missing_disk_file_falls_back_to_embedded() {
+        let d = temp_dir("missing");
+        let lib = ShaderLibrary::with_dir(d.clone());
+        assert!(lib.source("post").unwrap().contains("fn agx"));
+        let _ = std::fs::remove_dir_all(d);
+    }
+}

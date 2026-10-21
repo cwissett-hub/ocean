@@ -1,3 +1,4 @@
+// #include frame_common.wgsl
 // Ocean surface into the G-buffer: nested camera-centred grids displaced by the four FFT
 // cascades. Needs frame_common.wgsl.
 

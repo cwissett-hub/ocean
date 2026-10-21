@@ -4,7 +4,7 @@
 use crate::gpu::extent::half_extent;
 use crate::params::ReflectionMode;
 use crate::render::gbuffer::GBuffer;
-use crate::render::shade::FRAME_COMMON;
+use crate::gpu::shaders::ShaderLibrary;
 
 /// History weight for temporal accumulation: none without valid history, 0.9 for still
 /// pixels, falling linearly to 0.5 at 4 px of motion. `reflect_resolve.wgsl` mirrors this.
@@ -56,10 +56,10 @@ fn storage_target(d: &wgpu::Device, label: &str, (w, h): (u32, u32)) -> wgpu::Te
     .create_view(&Default::default())
 }
 
-fn pipeline(d: &wgpu::Device, label: &str, body: &str) -> wgpu::ComputePipeline {
+fn pipeline(d: &wgpu::Device, label: &str, src: &str) -> wgpu::ComputePipeline {
     let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
-        source: wgpu::ShaderSource::Wgsl(format!("{FRAME_COMMON}\n{body}").into()),
+        source: wgpu::ShaderSource::Wgsl(src.into()),
     });
     d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some(label),
@@ -72,9 +72,9 @@ fn pipeline(d: &wgpu::Device, label: &str, body: &str) -> wgpu::ComputePipeline 
 }
 
 impl ReflectionPass {
-    pub fn new(d: &wgpu::Device, queue: &wgpu::Queue, frame: &wgpu::Buffer, g: &GBuffer) -> ReflectionPass {
-        let ssr = pipeline(d, "reflect ssr", include_str!("../../shaders/reflect_ssr.wgsl"));
-        let resolve = pipeline(d, "reflect resolve", include_str!("../../shaders/reflect_resolve.wgsl"));
+    pub fn new(d: &wgpu::Device, lib: &ShaderLibrary, queue: &wgpu::Queue, frame: &wgpu::Buffer, g: &GBuffer) -> ReflectionPass {
+        let ssr = pipeline(d, "reflect ssr", &lib.source("reflect_ssr").expect("shader source"));
+        let resolve = pipeline(d, "reflect resolve", &lib.source("reflect_resolve").expect("shader source"));
         let params = d.create_buffer(&wgpu::BufferDescriptor {
             label: Some("reflect params"),
             size: std::mem::size_of::<ReflectParams>() as u64,

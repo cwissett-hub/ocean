@@ -1,3 +1,4 @@
+// #include frame_common.wgsl
 // Half-resolution screen-space reflections. Marches the reflected ray in world space with
 // growing steps, tests it against the depth buffer and returns last frame's lit colour at the
 // hit (alpha = confidence; 0 = missed, shading falls back to the sky). Needs frame_common.wgsl.

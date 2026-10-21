@@ -5,12 +5,14 @@ use glam::Mat4;
 
 use crate::gpu::adapter::GpuContext;
 use crate::gpu::extent::render_extent;
+use crate::gpu::timing::{GpuTimer, PassStats};
 use crate::params::OceanParams;
 use crate::render::gbuffer::{DEPTH_FORMAT, GBuffer, MATERIAL_FORMAT, MOTION_FORMAT, NORMAL_FORMAT};
 use crate::render::ocean_mesh::{BASE_CELL_M, GRID, LEVELS, OceanMesh};
 use crate::render::post::{Post, exposure_ev, exposure_multiplier};
 use crate::render::reflect::ReflectionPass;
-use crate::render::shade::{FRAME_COMMON, ShadePass};
+use crate::gpu::shaders::ShaderLibrary;
+use crate::render::shade::ShadePass;
 use crate::render::sky::{SkyLuts, sun_direction};
 use crate::scene::camera::{CameraRig, FixedCamera};
 use crate::waves::foam::foam_params;
@@ -88,6 +90,7 @@ pub struct Renderer {
     prev_view_proj: Option<Mat4>,
     spectrum_key: SpectrumKey,
     stats: SpectrumStats,
+    timer: GpuTimer,
 }
 
 fn internal_extent(surface: (u32, u32), scale: f32) -> (u32, u32) {
@@ -95,11 +98,17 @@ fn internal_extent(surface: (u32, u32), scale: f32) -> (u32, u32) {
 }
 
 impl Renderer {
-    pub fn new(ctx: &GpuContext, format: wgpu::TextureFormat, surface_extent: (u32, u32), params: &OceanParams) -> Renderer {
+    pub fn new(
+        ctx: &GpuContext,
+        lib: &ShaderLibrary,
+        format: wgpu::TextureFormat,
+        surface_extent: (u32, u32),
+        params: &OceanParams,
+    ) -> Renderer {
         let d = &ctx.device;
         let spectrum = build_spectrum(params, SEED);
-        let ocean = GpuOcean::new(ctx, &spectrum);
-        let sky = SkyLuts::new(ctx);
+        let ocean = GpuOcean::new(ctx, lib, &spectrum);
+        let sky = SkyLuts::new(ctx, lib);
         let mesh = OceanMesh::new(d);
         let uniforms = d.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame uniforms"),
@@ -181,7 +190,7 @@ impl Renderer {
         let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ocean_gbuffer"),
             source: wgpu::ShaderSource::Wgsl(
-                format!("{FRAME_COMMON}\n{}", include_str!("../../shaders/ocean_gbuffer.wgsl")).into(),
+                lib.source("ocean_gbuffer").expect("shader source").into(),
             ),
         });
         let gbuffer_pipeline = d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -212,9 +221,9 @@ impl Renderer {
             cache: None,
         });
         let gbuffer = GBuffer::new(d, internal_extent(surface_extent, params.render_scale));
-        let reflections = ReflectionPass::new(d, &ctx.queue, &uniforms, &gbuffer);
-        let shade = ShadePass::new(d, &uniforms, &sky, &gbuffer, reflections.views());
-        let post = Post::new(d, format, &gbuffer);
+        let reflections = ReflectionPass::new(d, lib, &ctx.queue, &uniforms, &gbuffer);
+        let shade = ShadePass::new(d, lib, &uniforms, &sky, &gbuffer, reflections.views());
+        let post = Post::new(d, lib, format, &gbuffer);
         Renderer {
             device: d.clone(),
             queue: ctx.queue.clone(),
@@ -233,6 +242,7 @@ impl Renderer {
             prev_view_proj: None,
             spectrum_key: SpectrumKey::of(params),
             stats: SpectrumStats::of(&spectrum, params),
+            timer: GpuTimer::new(d, &ctx.queue),
         }
     }
 
@@ -261,8 +271,26 @@ impl Renderer {
         }
     }
 
-    /// Records and submits one frame into `view` (the surface texture).
-    pub fn render(&mut self, view: &wgpu::TextureView, params: &OceanParams, t: f32, dt: f32) {
+    /// GPU time per pass and per frame over the last few seconds.
+    pub fn gpu_stats(&self) -> (Vec<(&'static str, PassStats)>, PassStats) {
+        (self.timer.stats(), self.timer.total())
+    }
+
+    pub fn gpu_timer(&mut self) -> &mut GpuTimer {
+        &mut self.timer
+    }
+
+    /// Records and submits one frame into `view` (the surface texture). `overlay` records any
+    /// passes drawn on top (the UI) into the same submission.
+    pub fn render(
+        &mut self,
+        view: &wgpu::TextureView,
+        params: &OceanParams,
+        t: f32,
+        dt: f32,
+        overlay: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView),
+    ) {
+        self.timer.poll(&self.device);
         let params = params.clamped();
         self.ensure_targets(params.render_scale);
         self.ensure_spectrum(&params);
@@ -290,8 +318,11 @@ impl Renderer {
         self.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
 
         let mut enc = self.device.create_command_encoder(&Default::default());
+        self.timer.start(&mut enc);
         self.ocean.update(&mut enc, t % REPEAT_PERIOD_S, params.choppiness, foam_params(&params), dt);
+        self.timer.mark(&mut enc, "ocean sim");
         self.sky.update(&mut enc, sun);
+        self.timer.mark(&mut enc, "sky");
         {
             let g = &self.gbuffer;
             let color = |view| {
@@ -317,10 +348,18 @@ impl Renderer {
             pass.set_index_buffer(self.mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.mesh.index_count, 0, 0..LEVELS);
         }
+        self.timer.mark(&mut enc, "gbuffer");
         self.reflections.record(&mut enc, params.reflection_mode);
+        self.timer.mark(&mut enc, "reflections");
         self.shade.record(&mut enc, &self.gbuffer, &self.sky, self.reflections.index());
         self.gbuffer.record_history(&mut enc);
+        self.timer.mark(&mut enc, "shade");
         self.post.record(&mut enc, &self.queue, view, exposure);
+        self.timer.mark(&mut enc, "post");
+        overlay(&mut enc, view);
+        self.timer.mark(&mut enc, "ui");
+        self.timer.finish(&mut enc);
         self.queue.submit([enc.finish()]);
+        self.timer.after_submit();
     }
 }

@@ -62,12 +62,27 @@ struct App {
 impl App {
     fn new(params: OceanParams, bench: Option<Bench>) -> Self {
         let now = Instant::now();
-        App { gfx: None, params, show_panel: false, bench, start: now, last_frame: now, frames: 0, fps_since: now, fps: 0.0, freeze_time: None }
+        App {
+            gfx: None,
+            params,
+            show_panel: false,
+            bench,
+            start: now,
+            last_frame: now,
+            frames: 0,
+            fps_since: now,
+            fps: 0.0,
+            freeze_time: None,
+        }
     }
 }
 
 fn present_mode(vsync: bool) -> wgpu::PresentMode {
-    if vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync }
+    if vsync {
+        wgpu::PresentMode::AutoVsync
+    } else {
+        wgpu::PresentMode::AutoNoVsync
+    }
 }
 
 impl Gfx {
@@ -75,7 +90,12 @@ impl Gfx {
         let (ctx, surface) = GpuContext::new_for_surface(window.clone())?;
         let size = window.inner_size();
         let caps = surface.get_capabilities(&ctx.adapter);
-        let format = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);
+        let format = caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| f.is_srgb())
+            .unwrap_or(caps.formats[0]);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -132,7 +152,13 @@ impl Gfx {
             return;
         }
         let scope = self.ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let fresh = Renderer::new(&self.ctx, &self.shaders, self.config.format, (self.config.width, self.config.height), params);
+        let fresh = Renderer::new(
+            &self.ctx,
+            &self.shaders,
+            self.config.format,
+            (self.config.width, self.config.height),
+            params,
+        );
         match pollster::block_on(scope.pop()) {
             None => {
                 self.renderer = fresh;
@@ -144,7 +170,9 @@ impl Gfx {
 
     fn render(&mut self, params: &mut OceanParams, show_panel: bool, fps: f32, t: f32, dt: f32) {
         let size = self.window.inner_size();
-        let Some(internal) = render_extent(size.width, size.height, params.render_scale) else { return };
+        let Some(internal) = render_extent(size.width, size.height, params.render_scale) else {
+            return;
+        };
         let want_mode = present_mode(params.vsync);
         if self.config.present_mode != want_mode {
             self.config.present_mode = want_mode;
@@ -179,11 +207,13 @@ impl Gfx {
                 ui::overlay(ctx, &info);
             }
         });
-        self.egui_state.handle_platform_output(&self.window, out.platform_output);
+        self.egui_state
+            .handle_platform_output(&self.window, out.platform_output);
         let prims = self.egui_ctx.tessellate(out.shapes, out.pixels_per_point);
         for (id, deltas) in &out.textures_delta.set {
             for delta in deltas {
-                self.egui_renderer.update_texture(&self.ctx.device, &self.ctx.queue, *id, delta);
+                self.egui_renderer
+                    .update_texture(&self.ctx.device, &self.ctx.queue, *id, delta);
             }
         }
         let screen = egui_wgpu::ScreenDescriptor {
@@ -199,7 +229,10 @@ impl Gfx {
                     view: target,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 ..Default::default()
             });
@@ -218,7 +251,9 @@ impl ApplicationHandler for App {
         if self.gfx.is_some() {
             return;
         }
-        let attrs = Window::default_attributes().with_title("Ocean").with_inner_size(LogicalSize::new(1280.0, 720.0));
+        let attrs = Window::default_attributes()
+            .with_title("Ocean")
+            .with_inner_size(LogicalSize::new(1280.0, 720.0));
         let window = Arc::new(el.create_window(attrs).expect("create window"));
         match Gfx::new(window, &self.params) {
             Ok(g) => self.gfx = Some(g),
@@ -235,7 +270,9 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::Resized(s) => gfx.resize(s.width, s.height),
-            WindowEvent::KeyboardInput { event: k, .. } if !consumed && k.state == ElementState::Pressed && !k.repeat => {
+            WindowEvent::KeyboardInput { event: k, .. }
+                if !consumed && k.state == ElementState::Pressed && !k.repeat =>
+            {
                 match k.physical_key {
                     PhysicalKey::Code(KeyCode::F1) => self.show_panel = !self.show_panel,
                     PhysicalKey::Code(KeyCode::F2) => self.params.show_overlay = !self.params.show_overlay,
@@ -254,7 +291,8 @@ impl ApplicationHandler for App {
                 let secs = self.fps_since.elapsed().as_secs_f32();
                 if secs >= 0.5 {
                     self.fps = self.frames as f32 / secs;
-                    gfx.window.set_title(&format!("Ocean — {} — {:.0} fps", gfx.ctx.adapter_name, self.fps));
+                    gfx.window
+                        .set_title(&format!("Ocean — {} — {:.0} fps", gfx.ctx.adapter_name, self.fps));
                     self.frames = 0;
                     self.fps_since = Instant::now();
                 }
@@ -310,7 +348,12 @@ fn parse_args() -> anyhow::Result<(OceanParams, Option<Bench>, bool, Option<f32>
     let mut params = apply_overrides(OceanParams::default(), &overrides).map_err(anyhow::Error::msg)?;
     let bench = bench_frames.map(|frames| {
         params.vsync = false;
-        Bench { frames, out: bench_out, seen: 0, cpu_ms: Vec::new() }
+        Bench {
+            frames,
+            out: bench_out,
+            seen: 0,
+            cpu_ms: Vec::new(),
+        }
     });
     Ok((params, bench, panel, freeze))
 }

@@ -27,7 +27,11 @@ pub struct SkyLuts {
 fn lut(d: &wgpu::Device, label: &str, (w, h): (u32, u32)) -> (wgpu::Texture, wgpu::TextureView) {
     let t = d.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -70,9 +74,7 @@ impl SkyLuts {
         });
         let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sky_luts"),
-            source: wgpu::ShaderSource::Wgsl(
-                lib.source("sky_luts").expect("shader source").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(lib.source("sky_luts").expect("shader source").into()),
         });
         use wgpu::BindingResource as B;
         let pass = |entry: &str, bindings: Vec<(u32, B<'_>)>| {
@@ -84,8 +86,10 @@ impl SkyLuts {
                 compilation_options: Default::default(),
                 cache: None,
             });
-            let entries: Vec<_> =
-                bindings.into_iter().map(|(binding, resource)| wgpu::BindGroupEntry { binding, resource }).collect();
+            let entries: Vec<_> = bindings
+                .into_iter()
+                .map(|(binding, resource)| wgpu::BindGroupEntry { binding, resource })
+                .collect();
             let bg = d.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some(entry),
                 layout: &p.get_bind_group_layout(0),
@@ -96,7 +100,11 @@ impl SkyLuts {
         let trans_pass = pass("transmittance", vec![(4, B::TextureView(&tv))]);
         let ms_pass = pass(
             "multiscatter_lut",
-            vec![(1, B::TextureView(&tv)), (3, B::Sampler(&clamp)), (4, B::TextureView(&mv))],
+            vec![
+                (1, B::TextureView(&tv)),
+                (3, B::Sampler(&clamp)),
+                (4, B::TextureView(&mv)),
+            ],
         );
         let sky_view_pass = pass(
             "sky_view",
@@ -160,14 +168,36 @@ impl SkyLuts {
             label: Some("sky sample"),
             layout: &layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: B::TextureView(&tv) },
-                wgpu::BindGroupEntry { binding: 2, resource: B::TextureView(&sv) },
-                wgpu::BindGroupEntry { binding: 3, resource: B::Sampler(&clamp) },
-                wgpu::BindGroupEntry { binding: 4, resource: B::Sampler(&wrap) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: B::TextureView(&tv),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: B::TextureView(&sv),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: B::Sampler(&clamp),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: B::Sampler(&wrap),
+                },
             ],
         });
-        SkyLuts { queue: ctx.queue.clone(), params, sky_view_pass, layout, bind_group, last_sun: None }
+        SkyLuts {
+            queue: ctx.queue.clone(),
+            params,
+            sky_view_pass,
+            layout,
+            bind_group,
+            last_sun: None,
+        }
     }
 
     /// Recomputes the sky-view LUT if the sun moved since the last call.
@@ -176,7 +206,11 @@ impl SkyLuts {
             return;
         }
         self.last_sun = Some(sun_dir);
-        self.queue.write_buffer(&self.params, 0, bytemuck::cast_slice(&[sun_dir.x, sun_dir.y, sun_dir.z, 0.0]));
+        self.queue.write_buffer(
+            &self.params,
+            0,
+            bytemuck::cast_slice(&[sun_dir.x, sun_dir.y, sun_dir.z, 0.0]),
+        );
         let mut cp = enc.begin_compute_pass(&Default::default());
         cp.set_pipeline(&self.sky_view_pass.0);
         cp.set_bind_group(0, &self.sky_view_pass.1, &[]);

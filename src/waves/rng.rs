@@ -7,7 +7,10 @@ pub struct Pcg32 {
 
 impl Pcg32 {
     pub fn new(seed: u64) -> Self {
-        let mut r = Pcg32 { state: 0, inc: (seed << 1) | 1 };
+        let mut r = Pcg32 {
+            state: 0,
+            inc: (seed << 1) | 1,
+        };
         r.next_u32();
         r.state = r.state.wrapping_add(0x853c_49e6_748f_ea9b ^ seed);
         r.next_u32();

@@ -19,38 +19,47 @@ fn slider(ui: &mut egui::Ui, label: &str, v: &mut f32, range: (f32, f32), suffix
 }
 
 pub fn settings_panel(ctx: &egui::Context, p: &mut OceanParams, rt_available: bool) {
-    egui::Window::new("Settings").default_pos([12.0, 12.0]).resizable(false).show(ctx, |ui| {
-        ui.heading("Sea");
-        slider(ui, "wind speed", &mut p.wind_speed, params::WIND_SPEED, " m/s");
-        slider(ui, "wind direction", &mut p.wind_dir_deg, params::WIND_DIR_DEG, "°");
-        slider(ui, "fetch", &mut p.fetch_km, params::FETCH_KM, " km");
-        slider(ui, "swell", &mut p.swell_amount, params::SWELL_AMOUNT, "");
-        slider(ui, "choppiness", &mut p.choppiness, params::CHOPPINESS, "");
-        slider(ui, "foam", &mut p.foam_amount, params::FOAM_AMOUNT, "");
-        slider(ui, "spray", &mut p.particle_amount, params::PARTICLE_AMOUNT, "");
-        ui.separator();
-        ui.heading("Sun");
-        slider(ui, "elevation", &mut p.sun_elevation_deg, params::SUN_ELEVATION_DEG, "°");
-        slider(ui, "azimuth", &mut p.sun_azimuth_deg, params::SUN_AZIMUTH_DEG, "°");
-        ui.separator();
-        ui.heading("Rendering");
-        ui.horizontal(|ui| {
-            ui.label("reflections");
-            ui.add_enabled_ui(rt_available, |ui| {
-                ui.radio_value(&mut p.reflection_mode, ReflectionMode::Rt, "ray traced")
-                    .on_disabled_hover_text("This GPU/driver has no hardware ray query");
+    egui::Window::new("Settings")
+        .default_pos([12.0, 12.0])
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.heading("Sea");
+            slider(ui, "wind speed", &mut p.wind_speed, params::WIND_SPEED, " m/s");
+            slider(ui, "wind direction", &mut p.wind_dir_deg, params::WIND_DIR_DEG, "°");
+            slider(ui, "fetch", &mut p.fetch_km, params::FETCH_KM, " km");
+            slider(ui, "swell", &mut p.swell_amount, params::SWELL_AMOUNT, "");
+            slider(ui, "choppiness", &mut p.choppiness, params::CHOPPINESS, "");
+            slider(ui, "foam", &mut p.foam_amount, params::FOAM_AMOUNT, "");
+            slider(ui, "spray", &mut p.particle_amount, params::PARTICLE_AMOUNT, "");
+            ui.separator();
+            ui.heading("Sun");
+            slider(
+                ui,
+                "elevation",
+                &mut p.sun_elevation_deg,
+                params::SUN_ELEVATION_DEG,
+                "°",
+            );
+            slider(ui, "azimuth", &mut p.sun_azimuth_deg, params::SUN_AZIMUTH_DEG, "°");
+            ui.separator();
+            ui.heading("Rendering");
+            ui.horizontal(|ui| {
+                ui.label("reflections");
+                ui.add_enabled_ui(rt_available, |ui| {
+                    ui.radio_value(&mut p.reflection_mode, ReflectionMode::Rt, "ray traced")
+                        .on_disabled_hover_text("This GPU/driver has no hardware ray query");
+                });
+                ui.radio_value(&mut p.reflection_mode, ReflectionMode::ScreenSpace, "screen space");
             });
-            ui.radio_value(&mut p.reflection_mode, ReflectionMode::ScreenSpace, "screen space");
+            slider(ui, "render scale", &mut p.render_scale, params::RENDER_SCALE, "×");
+            ui.checkbox(&mut p.vsync, "vsync");
+            ui.checkbox(&mut p.show_overlay, "performance overlay (F2)");
+            ui.separator();
+            if ui.button("reset to defaults").clicked() {
+                *p = OceanParams::default();
+            }
+            ui.small("F1 settings · F2 overlay · F5 reload shaders · Esc quit");
         });
-        slider(ui, "render scale", &mut p.render_scale, params::RENDER_SCALE, "×");
-        ui.checkbox(&mut p.vsync, "vsync");
-        ui.checkbox(&mut p.show_overlay, "performance overlay (F2)");
-        ui.separator();
-        if ui.button("reset to defaults").clicked() {
-            *p = OceanParams::default();
-        }
-        ui.small("F1 settings · F2 overlay · F5 reload shaders · Esc quit");
-    });
 }
 
 pub fn overlay(ctx: &egui::Context, info: &OverlayInfo) {
@@ -64,7 +73,10 @@ pub fn overlay(ctx: &egui::Context, info: &OverlayInfo) {
                 ui.label(egui::RichText::new(format!("{:.0} fps", info.fps)).strong());
                 ui.small(&info.adapter);
                 ui.small(&info.rt_reason);
-                ui.small(format!("internal {}×{}", info.internal_extent.0, info.internal_extent.1));
+                ui.small(format!(
+                    "internal {}×{}",
+                    info.internal_extent.0, info.internal_extent.1
+                ));
                 ui.separator();
                 egui::Grid::new("passes").num_columns(3).show(ui, |ui| {
                     ui.small("pass");

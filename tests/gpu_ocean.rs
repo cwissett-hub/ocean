@@ -28,7 +28,10 @@ fn gpu_matches_cpu_reference() {
         let mut worst = 0.0f32;
         for i in 0..disp.len() {
             let (g, w) = (disp[i], want.disp[i]);
-            worst = worst.max((g[0] - w[0]).abs()).max((g[1] - w[1]).abs()).max((g[2] - w[2]).abs());
+            worst = worst
+                .max((g[0] - w[0]).abs())
+                .max((g[1] - w[1]).abs())
+                .max((g[2] - w[2]).abs());
             worst = worst.max((g[3] - want.derivs[i][2]).abs());
             let d = der[i];
             let ws = [want.slope[i][0], want.slope[i][1], want.derivs[i][0], want.derivs[i][1]];
@@ -44,11 +47,20 @@ fn gpu_matches_cpu_reference() {
 fn foam_accumulates_in_strong_wind_and_not_in_calm() {
     let ctx = GpuContext::new_headless().expect("gpu");
     let frac = |wind: f32| {
-        let p = OceanParams { wind_speed: wind, ..Default::default() };
+        let p = OceanParams {
+            wind_speed: wind,
+            ..Default::default()
+        };
         let mut gpu = GpuOcean::new(&ctx, &ShaderLibrary::embedded(), &build_spectrum(&p, 42));
         for i in 0..120 {
             let mut enc = ctx.device.create_command_encoder(&Default::default());
-            gpu.update(&mut enc, i as f32 / 60.0, p.choppiness, ocean::waves::foam::foam_params(&p), 1.0 / 60.0);
+            gpu.update(
+                &mut enc,
+                i as f32 / 60.0,
+                p.choppiness,
+                ocean::waves::foam::foam_params(&p),
+                1.0 / 60.0,
+            );
             ctx.queue.submit([enc.finish()]);
         }
         let foam = gpu.read_foam(&ctx);

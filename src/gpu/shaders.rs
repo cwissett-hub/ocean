@@ -106,7 +106,10 @@ fn expand(files: &HashMap<String, String>, name: &str, seen: &mut Vec<String>, o
 impl ShaderLibrary {
     /// Only the copies compiled into the exe.
     pub fn embedded() -> ShaderLibrary {
-        ShaderLibrary { dir: None, files: EMBEDDED.iter().map(|(n, s)| (n.to_string(), s.to_string())).collect() }
+        ShaderLibrary {
+            dir: None,
+            files: EMBEDDED.iter().map(|(n, s)| (n.to_string(), s.to_string())).collect(),
+        }
     }
 
     /// Embedded copies overridden by whatever `dir` holds.
@@ -119,7 +122,9 @@ impl ShaderLibrary {
 
     /// `shaders/` next to the exe, else in the working directory, else embedded only.
     pub fn discover() -> ShaderLibrary {
-        let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("shaders")));
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("shaders")));
         let cwd = std::env::current_dir().ok().map(|d| d.join("shaders"));
         match exe_dir.into_iter().chain(cwd).find(|d| d.is_dir()) {
             Some(d) => ShaderLibrary::with_dir(d),
@@ -134,7 +139,11 @@ impl ShaderLibrary {
     fn read_disk_from(&self, dir: &std::path::Path) -> HashMap<String, String> {
         EMBEDDED
             .iter()
-            .filter_map(|(n, _)| std::fs::read_to_string(dir.join(format!("{n}.wgsl"))).ok().map(|s| (n.to_string(), s)))
+            .filter_map(|(n, _)| {
+                std::fs::read_to_string(dir.join(format!("{n}.wgsl")))
+                    .ok()
+                    .map(|s| (n.to_string(), s))
+            })
             .collect()
     }
 
@@ -213,7 +222,11 @@ mod tests {
         std::fs::write(d.join("fft.wgsl"), "fn main( { this is not wgsl").unwrap();
         let errors = lib.reload_all();
         assert!(errors.iter().any(|(n, _)| n == "fft"), "{errors:?}");
-        assert_eq!(lib.source("fft").unwrap(), before, "broken shader replaced the working one");
+        assert_eq!(
+            lib.source("fft").unwrap(),
+            before,
+            "broken shader replaced the working one"
+        );
         let _ = std::fs::remove_dir_all(d);
     }
 

@@ -29,7 +29,10 @@ impl BuoyMesh {
     fn add_cylinder(&mut self, center: Vec2, radius: f32, y0: f32, y1: f32, segments: u32) {
         let ring = |y: f32, i: u32| {
             let a = std::f32::consts::TAU * i as f32 / segments as f32;
-            (Vec3::new(center.x + radius * a.cos(), y, center.y + radius * a.sin()), Vec3::new(a.cos(), 0.0, a.sin()))
+            (
+                Vec3::new(center.x + radius * a.cos(), y, center.y + radius * a.sin()),
+                Vec3::new(a.cos(), 0.0, a.sin()),
+            )
         };
         // Side.
         let base = self.vertices.len() as u32;
@@ -65,7 +68,10 @@ impl BuoyMesh {
 
 /// Float drum (Ø1.8 m, half submerged), deck, four cage posts, top ring and lantern: 4 m tall.
 pub fn build_buoy_mesh() -> BuoyMesh {
-    let mut m = BuoyMesh { vertices: Vec::new(), indices: Vec::new() };
+    let mut m = BuoyMesh {
+        vertices: Vec::new(),
+        indices: Vec::new(),
+    };
     m.add_cylinder(Vec2::ZERO, 0.9, -0.5, 0.4, 40);
     m.add_cylinder(Vec2::ZERO, 0.95, 0.4, 0.47, 40);
     for k in 0..4 {
@@ -86,7 +92,12 @@ pub struct BuoyBody {
 
 impl BuoyBody {
     pub fn at(position: Vec3) -> BuoyBody {
-        BuoyBody { position, velocity: Vec3::ZERO, rotation: Quat::IDENTITY, angular_velocity: Vec3::ZERO }
+        BuoyBody {
+            position,
+            velocity: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            angular_velocity: Vec3::ZERO,
+        }
     }
 
     /// World xz points whose water the next `step` needs (same order as SAMPLE_OFFSETS).
@@ -100,7 +111,8 @@ impl BuoyBody {
         }
         let n = (dt / MAX_SUBSTEP_S).ceil().clamp(1.0, 240.0) as u32;
         let h = dt / n as f32;
-        let inv_inertia = 1.0 / (SAMPLE_OFFSETS.iter().map(|o| o.length_squared()).sum::<f32>() / SAMPLE_OFFSETS.len() as f32);
+        let inv_inertia =
+            1.0 / (SAMPLE_OFFSETS.iter().map(|o| o.length_squared()).sum::<f32>() / SAMPLE_OFFSETS.len() as f32);
         for _ in 0..n {
             let mut force = 0.0;
             let mut torque = Vec3::ZERO;
@@ -149,7 +161,11 @@ mod tests {
     use glam::Vec3;
 
     fn flat(height: f32) -> [WaterSample; 5] {
-        [WaterSample { height, normal: Vec3::Y, velocity: Vec3::ZERO }; 5]
+        [WaterSample {
+            height,
+            normal: Vec3::Y,
+            velocity: Vec3::ZERO,
+        }; 5]
     }
 
     #[test]
@@ -223,7 +239,10 @@ mod tests {
                     x.normal = Vec3::new(rnd(), 1.0, rnd()).normalize();
                 }
                 b.step(&s, dt);
-                assert!(b.position.is_finite() && b.velocity.is_finite() && b.angular_velocity.is_finite(), "dt {dt}");
+                assert!(
+                    b.position.is_finite() && b.velocity.is_finite() && b.angular_velocity.is_finite(),
+                    "dt {dt}"
+                );
                 assert!(b.rotation.is_finite() && (b.rotation.length() - 1.0).abs() < 1e-3);
             }
         }
@@ -249,7 +268,10 @@ mod tests {
             let area = (p(t[1]) - p(t[0])).cross(p(t[2]) - p(t[0])).length();
             assert!(area > 1e-8, "degenerate triangle {t:?}");
         }
-        let (lo, hi) = m.vertices.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v[1]), hi.max(v[1])));
+        let (lo, hi) = m
+            .vertices
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v[1]), hi.max(v[1])));
         assert!((3.5..=4.5).contains(&(hi - lo)), "height {}", hi - lo);
         assert!(lo < -0.2, "drum must reach below the waterline");
         assert!((m.indices.len() / 3) < 8000, "{} triangles", m.indices.len() / 3);

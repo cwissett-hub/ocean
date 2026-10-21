@@ -30,7 +30,10 @@ const FIELDS: usize = 8; // height, Dx, Dz, sx, sz, Jxx, Jzz, Jxz
 
 impl CpuOcean {
     pub fn new(spectrum: &SpectrumSet, choppiness: f32) -> Self {
-        CpuOcean { spectrum: spectrum.clone(), choppiness }
+        CpuOcean {
+            spectrum: spectrum.clone(),
+            choppiness,
+        }
     }
 
     pub fn evaluate(&self, cascade: usize, t: f32) -> OceanField {
@@ -121,7 +124,10 @@ mod tests {
 
     #[test]
     fn field_variance_matches_spectrum() {
-        let p = OceanParams { swell_amount: 0.0, ..Default::default() };
+        let p = OceanParams {
+            swell_amount: 0.0,
+            ..Default::default()
+        };
         let o = ocean(&p);
         let var: f32 = (0..4)
             .map(|c| {
@@ -130,19 +136,27 @@ mod tests {
             })
             .sum();
         let hs_field = 4.0 * var.sqrt();
-        let m0 = crate::waves::spectrum::tests::integrate(
-            |w| jonswap(w, p.wind_speed, p.fetch_km * 1000.0),
-            0.02,
-            40.0,
-        );
+        let m0 =
+            crate::waves::spectrum::tests::integrate(|w| jonswap(w, p.wind_speed, p.fetch_km * 1000.0), 0.02, 40.0);
         let hs_spec = 4.0 * m0.sqrt();
-        assert!((hs_field - hs_spec).abs() / hs_spec < 0.2, "field {hs_field} spectrum {hs_spec}");
+        assert!(
+            (hs_field - hs_spec).abs() / hs_spec < 0.2,
+            "field {hs_field} spectrum {hs_spec}"
+        );
     }
 
     #[test]
     fn swell_adds_energy() {
-        let calm = ocean(&OceanParams { swell_amount: 0.0, ..Default::default() }).evaluate(0, 0.0);
-        let swell = ocean(&OceanParams { swell_amount: 1.0, ..Default::default() }).evaluate(0, 0.0);
+        let calm = ocean(&OceanParams {
+            swell_amount: 0.0,
+            ..Default::default()
+        })
+        .evaluate(0, 0.0);
+        let swell = ocean(&OceanParams {
+            swell_amount: 1.0,
+            ..Default::default()
+        })
+        .evaluate(0, 0.0);
         let e = |f: &OceanField| f.disp.iter().map(|d| d[1] * d[1]).sum::<f32>();
         assert!(e(&swell) > 2.0 * e(&calm));
     }
@@ -163,7 +177,10 @@ mod tests {
 
     #[test]
     fn jacobian_is_one_without_choppiness() {
-        let o = ocean(&OceanParams { choppiness: 0.0, ..Default::default() });
+        let o = ocean(&OceanParams {
+            choppiness: 0.0,
+            ..Default::default()
+        });
         for c in 0..4 {
             let f = o.evaluate(c, 2.0);
             assert!(f.jacobian.iter().all(|j| (j - 1.0).abs() < 1e-5));
@@ -173,7 +190,11 @@ mod tests {
 
     #[test]
     fn choppiness_folds_some_crests_in_strong_wind() {
-        let o = ocean(&OceanParams { wind_speed: 15.0, choppiness: 1.2, ..Default::default() });
+        let o = ocean(&OceanParams {
+            wind_speed: 15.0,
+            choppiness: 1.2,
+            ..Default::default()
+        });
         // Sample every cascade at cascade 0's texel centres (4 m is a whole number of texels in
         // each finer grid) and form the Jacobian from the summed gradient, as the GPU does.
         let fields: Vec<_> = (0..4).map(|c| o.evaluate(c, 0.0)).collect();
@@ -195,7 +216,10 @@ mod tests {
 
     #[test]
     fn slope_matches_finite_difference_of_height() {
-        let o = ocean(&OceanParams { choppiness: 0.0, ..Default::default() });
+        let o = ocean(&OceanParams {
+            choppiness: 0.0,
+            ..Default::default()
+        });
         let f = o.evaluate(0, 1.0);
         // Central differences attenuate the shortest waves, so compare by correlation and sign
         // rather than value: a wrong axis, sign or scale of k would wreck the correlation.

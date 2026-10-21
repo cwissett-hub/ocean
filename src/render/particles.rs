@@ -101,15 +101,27 @@ pub struct ParticleSystem {
 }
 
 fn layout_entry(binding: u32, visibility: wgpu::ShaderStages, ty: wgpu::BindingType) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry { binding, visibility, ty, count: None }
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty,
+        count: None,
+    }
 }
 
 fn storage(read_only: bool) -> wgpu::BindingType {
-    wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None }
+    wgpu::BindingType::Buffer {
+        ty: wgpu::BufferBindingType::Storage { read_only },
+        has_dynamic_offset: false,
+        min_binding_size: None,
+    }
 }
 
-const UNIFORM: wgpu::BindingType =
-    wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None };
+const UNIFORM: wgpu::BindingType = wgpu::BindingType::Buffer {
+    ty: wgpu::BufferBindingType::Uniform,
+    has_dynamic_offset: false,
+    min_binding_size: None,
+};
 
 impl ParticleSystem {
     pub fn new(
@@ -121,11 +133,22 @@ impl ParticleSystem {
         sky: &crate::render::sky::SkyLuts,
         g: &crate::render::gbuffer::GBuffer,
     ) -> ParticleSystem {
-        let buffer = |label, size, usage| d.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
+        let buffer = |label, size, usage| {
+            d.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
         use wgpu::BufferUsages as U;
         let particles = buffer("particles", MAX_PARTICLES as u64 * PARTICLE_BYTES, U::STORAGE);
         let head = buffer("particle ring head", 16, U::STORAGE);
-        let params = buffer("particle params", std::mem::size_of::<SimParams>() as u64, U::UNIFORM | U::COPY_DST);
+        let params = buffer(
+            "particle params",
+            std::mem::size_of::<SimParams>() as u64,
+            U::UNIFORM | U::COPY_DST,
+        );
         let requests_buf = buffer("spawn requests", (MAX_REQUESTS * 32) as u64, U::STORAGE | U::COPY_DST);
         let cs = wgpu::ShaderStages::COMPUTE;
         let tex_array = wgpu::BindingType::Texture {
@@ -160,15 +183,42 @@ impl ParticleSystem {
             label: Some("particle sim"),
             layout: &sim_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: frame.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: B::TextureView(&ocean.displacement_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: B::TextureView(&ocean.derivatives_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: B::Sampler(&sampler) },
-                wgpu::BindGroupEntry { binding: 4, resource: particles.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: head.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: ocean.deposits().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 8, resource: requests_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: frame.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: B::TextureView(&ocean.displacement_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: B::TextureView(&ocean.derivatives_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: B::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: particles.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: head.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: ocean.deposits().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: requests_buf.as_entire_binding(),
+                },
             ],
         });
         let sim_pl = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -190,7 +240,12 @@ impl ParticleSystem {
                 cache: None,
             })
         };
-        let (clear, emit, spawn, update) = (compute("clear_deposits"), compute("emit"), compute("spawn_requests"), compute("update"));
+        let (clear, emit, spawn, update) = (
+            compute("clear_deposits"),
+            compute("emit"),
+            compute("spawn_requests"),
+            compute("update"),
+        );
 
         let fs = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
         let draw_layout = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -281,9 +336,18 @@ impl ParticleSystem {
             label: Some("particle draw"),
             layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: frame.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: particles.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&g.depth) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: frame.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: particles.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&g.depth),
+                },
             ],
         })
     }
@@ -304,7 +368,8 @@ impl ParticleSystem {
         let reqs = pack_requests(&std::mem::take(&mut self.pending), REQUEST_BUDGET);
         let reqs = &reqs[..reqs.len().min(MAX_REQUESTS)];
         if !reqs.is_empty() {
-            self.queue.write_buffer(&self.requests_buf, 0, bytemuck::cast_slice(reqs));
+            self.queue
+                .write_buffer(&self.requests_buf, 0, bytemuck::cast_slice(reqs));
         }
         let fwd = glam::Vec2::new(inp.cam_forward.x, inp.cam_forward.z).normalize_or(glam::Vec2::Y);
         let centre = glam::Vec2::new(inp.cam_pos.x, inp.cam_pos.z) + fwd * (EMIT_AREA_M * 0.5);
@@ -322,7 +387,10 @@ impl ParticleSystem {
             candidates: EMIT_CANDIDATES,
         };
         self.queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&p));
-        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("particles"), timestamp_writes: None });
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("particles"),
+            timestamp_writes: None,
+        });
         pass.set_bind_group(0, &self.sim_group, &[]);
         pass.set_pipeline(&self.clear);
         pass.dispatch_workgroups(512 * 512 / 64, 1, 1);
@@ -345,7 +413,10 @@ impl ParticleSystem {
                 view: hdr,
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
             })],
             ..Default::default()
         });
@@ -361,7 +432,12 @@ mod tests {
     use super::*;
 
     fn req(count: u32) -> SpawnRequest {
-        SpawnRequest { position: [0.0; 3], kind: 0, velocity: [0.0; 3], count }
+        SpawnRequest {
+            position: [0.0; 3],
+            kind: 0,
+            velocity: [0.0; 3],
+            count,
+        }
     }
 
     #[test]

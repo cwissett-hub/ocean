@@ -46,7 +46,12 @@ struct Chain {
 }
 
 impl Post {
-    pub fn new(d: &wgpu::Device, lib: &crate::gpu::shaders::ShaderLibrary, output: wgpu::TextureFormat, g: &GBuffer) -> Post {
+    pub fn new(
+        d: &wgpu::Device,
+        lib: &crate::gpu::shaders::ShaderLibrary,
+        output: wgpu::TextureFormat,
+        g: &GBuffer,
+    ) -> Post {
         let tex = |binding| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -106,7 +111,11 @@ impl Post {
                     module: &module,
                     entry_point: Some(fs),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })],
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
                 }),
                 multiview_mask: None,
                 cache: None,
@@ -136,7 +145,15 @@ impl Post {
             mapped_at_creation: false,
         });
         let chain = build_chain(d, &layout, &sampler, &params, g);
-        Post { layout, sampler, params, down, up, finish, chain }
+        Post {
+            layout,
+            sampler,
+            params,
+            down,
+            up,
+            finish,
+            chain,
+        }
     }
 
     /// Rebuilds the bloom chain for the G-buffer's current size.
@@ -144,9 +161,19 @@ impl Post {
         self.chain = build_chain(d, &self.layout, &self.sampler, &self.params, g);
     }
 
-    pub fn record(&self, enc: &mut wgpu::CommandEncoder, queue: &wgpu::Queue, output: &wgpu::TextureView, exposure: f32) {
+    pub fn record(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        queue: &wgpu::Queue,
+        output: &wgpu::TextureView,
+        exposure: f32,
+    ) {
         let c = &self.chain;
-        let p = PostParams { exposure, bloom_strength: BLOOM_STRENGTH / c.mips.len() as f32, _pad: [0.0; 2] };
+        let p = PostParams {
+            exposure,
+            bloom_strength: BLOOM_STRENGTH / c.mips.len() as f32,
+            _pad: [0.0; 2],
+        };
         queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&p));
         let pass = |enc: &mut wgpu::CommandEncoder,
                     target: &wgpu::TextureView,
@@ -159,7 +186,10 @@ impl Post {
                     view: target,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load,
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 ..Default::default()
             });
@@ -189,7 +219,11 @@ fn build_chain(
     let levels = BLOOM_LEVELS.min(32 - w.min(h).leading_zeros());
     let tex = d.create_texture(&wgpu::TextureDescriptor {
         label: Some("bloom"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: levels,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -211,19 +245,38 @@ fn build_chain(
             label: Some("post"),
             layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(src) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(extra) },
-                wgpu::BindGroupEntry { binding: 3, resource: params.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(src),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(extra),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: params.as_entire_binding(),
+                },
             ],
         })
     };
     // Downsample m reads HDR (m = 0) or mip m-1; upsample into mip m reads mip m+1.
     // Binding 2 is unused by those passes; HDR is bound there as it is never a target then.
-    let down_groups = (0..mips.len()).map(|m| group(if m == 0 { &g.hdr } else { &mips[m - 1] }, &g.hdr)).collect();
+    let down_groups = (0..mips.len())
+        .map(|m| group(if m == 0 { &g.hdr } else { &mips[m - 1] }, &g.hdr))
+        .collect();
     let up_groups = (0..mips.len() - 1).map(|m| group(&mips[m + 1], &g.hdr)).collect();
     let final_group = group(&g.hdr, &mips[0]);
-    Chain { mips, down_groups, up_groups, final_group }
+    Chain {
+        mips,
+        down_groups,
+        up_groups,
+        final_group,
+    }
 }
 
 #[cfg(test)]

@@ -28,7 +28,13 @@ pub struct BuoyPass {
 
 impl BuoyPass {
     /// `frame_layout` is the G-buffer pass's group-0 layout (frame uniforms first).
-    pub fn new(d: &wgpu::Device, queue: &wgpu::Queue, lib: &ShaderLibrary, frame_layout: &wgpu::BindGroupLayout, mesh: &BuoyMesh) -> BuoyPass {
+    pub fn new(
+        d: &wgpu::Device,
+        queue: &wgpu::Queue,
+        lib: &ShaderLibrary,
+        frame_layout: &wgpu::BindGroupLayout,
+        mesh: &BuoyMesh,
+    ) -> BuoyPass {
         let vertices = d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("buoy vertices"),
             contents: bytemuck::cast_slice(&mesh.vertices),
@@ -61,7 +67,10 @@ impl BuoyPass {
         let model_group = d.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("buoy model"),
             layout: &model_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: model.as_entire_binding() }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: model.as_entire_binding(),
+            }],
         });
         let pl = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("buoy"),
@@ -88,7 +97,10 @@ impl BuoyPass {
                     compilation_options: Default::default(),
                     buffers: std::slice::from_ref(&layout),
                 },
-                primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    ..Default::default()
+                },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH_FORMAT,
                     depth_write_enabled: Some(true),
@@ -110,7 +122,11 @@ impl BuoyPass {
         let gbuffer_pipeline = pipeline(
             "buoy gbuffer",
             "fs_gbuffer",
-            &[Some(NORMAL_FORMAT.into()), Some(MATERIAL_FORMAT.into()), Some(MOTION_FORMAT.into())],
+            &[
+                Some(NORMAL_FORMAT.into()),
+                Some(MATERIAL_FORMAT.into()),
+                Some(MOTION_FORMAT.into()),
+            ],
         );
         let albedo_pipeline = pipeline("buoy albedo", "fs_albedo", &[Some(MATERIAL_FORMAT.into())]);
         BuoyPass {
@@ -129,7 +145,10 @@ impl BuoyPass {
     pub fn set_transform(&mut self, t: Mat4) {
         let prev = self.prev.unwrap_or(t);
         self.prev = Some(t);
-        let u = ModelUniforms { transform: t.to_cols_array_2d(), prev_transform: prev.to_cols_array_2d() };
+        let u = ModelUniforms {
+            transform: t.to_cols_array_2d(),
+            prev_transform: prev.to_cols_array_2d(),
+        };
         self.queue.write_buffer(&self.model, 0, bytemuck::bytes_of(&u));
     }
 
@@ -141,11 +160,17 @@ impl BuoyPass {
                 view: &g.opaque_albedo,
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &g.opaque_depth,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0.0),
+                    store: wgpu::StoreOp::Store,
+                }),
                 stencil_ops: None,
             }),
             ..Default::default()

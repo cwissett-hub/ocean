@@ -96,7 +96,9 @@ pub struct FrameLog {
 impl GpuTimer {
     /// Timing is silently off when the device lacks encoder timestamps.
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> GpuTimer {
-        let enabled = device.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+        let enabled = device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
         let bytes = (MAX_MARKS * 8) as u64;
         let slots = if enabled {
             (0..SLOTS)

@@ -2,11 +2,11 @@
 //! accumulation. Shading reads `ReflectionPass::views()[index()]`.
 
 use crate::gpu::extent::half_extent;
+use crate::gpu::shaders::ShaderLibrary;
 use crate::params::ReflectionMode;
 use crate::render::gbuffer::GBuffer;
 use crate::render::rt_scene::RtScene;
 use crate::render::sky::SkyLuts;
-use crate::gpu::shaders::ShaderLibrary;
 
 /// History weight for temporal accumulation: none without valid history, 0.9 for still
 /// pixels, falling linearly to 0.5 at 4 px of motion. `reflect_resolve.wgsl` mirrors this.
@@ -49,7 +49,11 @@ pub struct ReflectionPass {
 fn storage_target(d: &wgpu::Device, label: &str, (w, h): (u32, u32)) -> wgpu::TextureView {
     d.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -76,9 +80,19 @@ fn pipeline(d: &wgpu::Device, label: &str, src: &str) -> wgpu::ComputePipeline {
 }
 
 impl ReflectionPass {
-    pub fn new(d: &wgpu::Device, lib: &ShaderLibrary, queue: &wgpu::Queue, frame: &wgpu::Buffer, g: &GBuffer) -> ReflectionPass {
+    pub fn new(
+        d: &wgpu::Device,
+        lib: &ShaderLibrary,
+        queue: &wgpu::Queue,
+        frame: &wgpu::Buffer,
+        g: &GBuffer,
+    ) -> ReflectionPass {
         let ssr = pipeline(d, "reflect ssr", &lib.source("reflect_ssr").expect("shader source"));
-        let resolve = pipeline(d, "reflect resolve", &lib.source("reflect_resolve").expect("shader source"));
+        let resolve = pipeline(
+            d,
+            "reflect resolve",
+            &lib.source("reflect_resolve").expect("shader source"),
+        );
         let params = d.create_buffer(&wgpu::BufferDescriptor {
             label: Some("reflect params"),
             size: std::mem::size_of::<ReflectParams>() as u64,
@@ -112,10 +126,19 @@ impl ReflectionPass {
         params: &wgpu::Buffer,
         frame: &wgpu::Buffer,
         g: &GBuffer,
-    ) -> (wgpu::TextureView, [wgpu::TextureView; 2], wgpu::BindGroup, [wgpu::BindGroup; 2], (u32, u32)) {
+    ) -> (
+        wgpu::TextureView,
+        [wgpu::TextureView; 2],
+        wgpu::BindGroup,
+        [wgpu::BindGroup; 2],
+        (u32, u32),
+    ) {
         let half = half_extent(g.extent.0, g.extent.1);
         let raw = storage_target(d, "reflection raw", half);
-        let history = [storage_target(d, "reflection a", half), storage_target(d, "reflection b", half)];
+        let history = [
+            storage_target(d, "reflection a", half),
+            storage_target(d, "reflection b", half),
+        ];
         let lin = d.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("reflect linear"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -124,8 +147,15 @@ impl ReflectionPass {
         });
         use wgpu::BindingResource as B;
         let group = |p: &wgpu::ComputePipeline, entries: Vec<(u32, B<'_>)>| {
-            let e: Vec<_> = entries.into_iter().map(|(binding, resource)| wgpu::BindGroupEntry { binding, resource }).collect();
-            d.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("reflect"), layout: &p.get_bind_group_layout(0), entries: &e })
+            let e: Vec<_> = entries
+                .into_iter()
+                .map(|(binding, resource)| wgpu::BindGroupEntry { binding, resource })
+                .collect();
+            d.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("reflect"),
+                layout: &p.get_bind_group_layout(0),
+                entries: &e,
+            })
         };
         let ssr_group = group(
             ssr,
@@ -167,11 +197,32 @@ impl ReflectionPass {
     }
 
     /// Adds the hardware ray-traced path (only on devices with ray query).
-    pub fn enable_rt(&mut self, d: &wgpu::Device, lib: &ShaderLibrary, sky: &SkyLuts, frame: &wgpu::Buffer, g: &GBuffer, scene: &RtScene) {
+    pub fn enable_rt(
+        &mut self,
+        d: &wgpu::Device,
+        lib: &ShaderLibrary,
+        sky: &SkyLuts,
+        frame: &wgpu::Buffer,
+        g: &GBuffer,
+        scene: &RtScene,
+    ) {
         let cs = wgpu::ShaderStages::COMPUTE;
-        let entry = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: cs, ty, count: None };
-        let uniform = wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None };
-        let tex = |sample_type| wgpu::BindingType::Texture { sample_type, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false };
+        let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: cs,
+            ty,
+            count: None,
+        };
+        let uniform = wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        };
+        let tex = |sample_type| wgpu::BindingType::Texture {
+            sample_type,
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        };
         let layout = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("reflect rt"),
             entries: &[
@@ -226,7 +277,11 @@ impl ReflectionPass {
         });
         let group = rt_group(d, &layout, frame, g, &self.raw, &self.params, scene);
         self.patch_grid = scene.config().grid;
-        self.rt = Some(RtPath { pipeline, layout, group });
+        self.rt = Some(RtPath {
+            pipeline,
+            layout,
+            group,
+        });
     }
 
     pub fn rt_enabled(&self) -> bool {
@@ -243,7 +298,10 @@ impl ReflectionPass {
         };
         self.queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&p));
         let groups = (self.half.0.div_ceil(8), self.half.1.div_ceil(8));
-        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("reflections"), timestamp_writes: None });
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("reflections"),
+            timestamp_writes: None,
+        });
         match (&self.rt, mode) {
             (Some(rt), ReflectionMode::Rt) => {
                 pass.set_pipeline(&rt.pipeline);
@@ -263,7 +321,6 @@ impl ReflectionPass {
         self.frame = self.frame.wrapping_add(1);
         self.history_valid = true;
     }
-
 
     pub fn views(&self) -> &[wgpu::TextureView; 2] {
         &self.history
@@ -295,15 +352,42 @@ fn rt_group(
         label: Some("reflect rt"),
         layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: frame.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: B::TextureView(&g.depth) },
-            wgpu::BindGroupEntry { binding: 2, resource: B::TextureView(&g.normal) },
-            wgpu::BindGroupEntry { binding: 3, resource: B::TextureView(raw) },
-            wgpu::BindGroupEntry { binding: 4, resource: params.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 5, resource: scene.tlas().as_binding() },
-            wgpu::BindGroupEntry { binding: 6, resource: scene.patch_vertices().as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 7, resource: B::TextureView(scene.derivatives()) },
-            wgpu::BindGroupEntry { binding: 8, resource: B::Sampler(scene.wave_sampler()) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: frame.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: B::TextureView(&g.depth),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: B::TextureView(&g.normal),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: B::TextureView(raw),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: params.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: scene.tlas().as_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: scene.patch_vertices().as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: B::TextureView(scene.derivatives()),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: B::Sampler(scene.wave_sampler()),
+            },
         ],
     })
 }
@@ -344,4 +428,3 @@ mod tests {
         assert_eq!(temporal_blend(true, f32::NAN), 0.0);
     }
 }
-

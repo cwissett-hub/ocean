@@ -55,7 +55,11 @@ pub const PARTICLE_AMOUNT: (f32, f32) = (0.0, 2.0);
 pub const RENDER_SCALE: (f32, f32) = (0.5, 1.5);
 
 fn clamp(v: f32, range: (f32, f32), default: f32) -> f32 {
-    if v.is_finite() { v.clamp(range.0, range.1) } else { default }
+    if v.is_finite() {
+        v.clamp(range.0, range.1)
+    } else {
+        default
+    }
 }
 
 impl OceanParams {
@@ -107,7 +111,11 @@ mod tests {
 
     #[test]
     fn clamp_replaces_nan_with_default() {
-        let p = OceanParams { wind_speed: f32::NAN, ..Default::default() }.clamped();
+        let p = OceanParams {
+            wind_speed: f32::NAN,
+            ..Default::default()
+        }
+        .clamped();
         assert_eq!(p.wind_speed, 5.0);
     }
 }
@@ -118,7 +126,11 @@ mod override_tests {
 
     #[test]
     fn sets_numeric_and_bool_fields() {
-        let p = apply_overrides(OceanParams::default(), &["wind_speed=15", "vsync=false", "sun_elevation_deg=-2.5"]).unwrap();
+        let p = apply_overrides(
+            OceanParams::default(),
+            &["wind_speed=15", "vsync=false", "sun_elevation_deg=-2.5"],
+        )
+        .unwrap();
         assert_eq!(p.wind_speed, 15.0);
         assert!(!p.vsync);
         assert_eq!(p.sun_elevation_deg, -2.5);
@@ -149,9 +161,19 @@ mod override_tests {
 pub fn apply_overrides<S: AsRef<str>>(mut p: OceanParams, overrides: &[S]) -> Result<OceanParams, String> {
     for o in overrides {
         let o = o.as_ref();
-        let (key, value) = o.split_once('=').ok_or_else(|| format!("expected key=value, got {o:?}"))?;
-        let num = || value.parse::<f32>().map_err(|_| format!("{key}: {value:?} is not a number"));
-        let flag = || value.parse::<bool>().map_err(|_| format!("{key}: {value:?} is not true/false"));
+        let (key, value) = o
+            .split_once('=')
+            .ok_or_else(|| format!("expected key=value, got {o:?}"))?;
+        let num = || {
+            value
+                .parse::<f32>()
+                .map_err(|_| format!("{key}: {value:?} is not a number"))
+        };
+        let flag = || {
+            value
+                .parse::<bool>()
+                .map_err(|_| format!("{key}: {value:?} is not true/false"))
+        };
         match key {
             "wind_speed" => p.wind_speed = num()?,
             "wind_dir_deg" => p.wind_dir_deg = num()?,

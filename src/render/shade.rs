@@ -1,7 +1,7 @@
 //! Full-screen composite of sky and water into the HDR target.
 
-use crate::render::gbuffer::{GBuffer, HDR_FORMAT};
 use crate::gpu::shaders::ShaderLibrary;
+use crate::render::gbuffer::{GBuffer, HDR_FORMAT};
 use crate::render::sky::SkyLuts;
 
 pub struct ShadePass {
@@ -100,7 +100,12 @@ impl ShadePass {
             ..Default::default()
         });
         let bind_groups = Self::bind(d, &layout, frame, g, refl, &sampler);
-        ShadePass { pipeline, layout, sampler, bind_groups }
+        ShadePass {
+            pipeline,
+            layout,
+            sampler,
+            bind_groups,
+        }
     }
 
     fn bind(
@@ -117,14 +122,38 @@ impl ShadePass {
                 label: Some("shade"),
                 layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: frame.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: T(&g.depth) },
-                    wgpu::BindGroupEntry { binding: 2, resource: T(&g.normal) },
-                    wgpu::BindGroupEntry { binding: 3, resource: T(&g.material) },
-                    wgpu::BindGroupEntry { binding: 4, resource: T(&refl[i]) },
-                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(sampler) },
-                    wgpu::BindGroupEntry { binding: 6, resource: T(&g.opaque_depth) },
-                    wgpu::BindGroupEntry { binding: 7, resource: T(&g.opaque_albedo) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: frame.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: T(&g.depth),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: T(&g.normal),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: T(&g.material),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: T(&refl[i]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: T(&g.opaque_depth),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: T(&g.opaque_albedo),
+                    },
                 ],
             })
         })
@@ -142,7 +171,10 @@ impl ShadePass {
                 view: &g.hdr,
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
             })],
             ..Default::default()
         });

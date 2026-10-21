@@ -42,7 +42,12 @@ pub struct FixedCamera {
 
 impl Default for FixedCamera {
     fn default() -> Self {
-        FixedCamera { height: 18.0, pitch_deg: -25.0, yaw_deg: 30.0, fov_y_deg: 60.0 }
+        FixedCamera {
+            height: 18.0,
+            pitch_deg: -25.0,
+            yaw_deg: 30.0,
+            fov_y_deg: 60.0,
+        }
     }
 }
 
@@ -63,7 +68,11 @@ mod tests {
 
     #[test]
     fn fixed_camera_sits_above_water_looking_down() {
-        let c = FixedCamera { yaw_deg: 30.0, ..Default::default() }.pose();
+        let c = FixedCamera {
+            yaw_deg: 30.0,
+            ..Default::default()
+        }
+        .pose();
         assert_eq!(c.position.y, 18.0);
         let pitch = c.forward.y.asin().to_degrees();
         assert!((pitch + 25.0).abs() < 1e-3, "pitch {pitch}");
@@ -73,8 +82,18 @@ mod tests {
     #[test]
     fn yaw_follows_azimuth_convention() {
         // Azimuth 0 looks along +z, 90 along +x (clockwise from above).
-        let f0 = FixedCamera { yaw_deg: 0.0, ..Default::default() }.pose().forward;
-        let f90 = FixedCamera { yaw_deg: 90.0, ..Default::default() }.pose().forward;
+        let f0 = FixedCamera {
+            yaw_deg: 0.0,
+            ..Default::default()
+        }
+        .pose()
+        .forward;
+        let f90 = FixedCamera {
+            yaw_deg: 90.0,
+            ..Default::default()
+        }
+        .pose()
+        .forward;
         assert!(f0.z > 0.0 && f0.x.abs() < 1e-5);
         assert!(f90.x > 0.0 && f90.z.abs() < 1e-5);
     }
@@ -88,7 +107,8 @@ mod tests {
         let far = inv.project_point3(Vec3::new(0.0, 1.0, 0.5));
         let top_ray = (far - near).normalize();
         assert!(top_ray.y > 0.0, "top edge looks below the horizon: {top_ray}");
-        let mid = (inv.project_point3(Vec3::new(0.0, 0.0, 0.5)) - inv.project_point3(Vec3::new(0.0, 0.0, 1.0))).normalize();
+        let mid =
+            (inv.project_point3(Vec3::new(0.0, 0.0, 0.5)) - inv.project_point3(Vec3::new(0.0, 0.0, 1.0))).normalize();
         assert!(mid.y < 0.0);
     }
 

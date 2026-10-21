@@ -88,11 +88,22 @@ impl WaveQuery {
             compilation_options: Default::default(),
             cache: None,
         });
-        let buffer = |label, size, usage| d.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
+        let buffer = |label, size, usage| {
+            d.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
         use wgpu::BufferUsages as U;
         let points = buffer("query points", (MAX_QUERY_POINTS * 8) as u64, U::STORAGE | U::COPY_DST);
         let results = buffer("query results", RESULT_BYTES, U::STORAGE | U::COPY_SRC);
-        let params = buffer("query params", std::mem::size_of::<QueryParams>() as u64, U::UNIFORM | U::COPY_DST);
+        let params = buffer(
+            "query params",
+            std::mem::size_of::<QueryParams>() as u64,
+            U::UNIFORM | U::COPY_DST,
+        );
         let sampler = d.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("query repeat"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -106,12 +117,30 @@ impl WaveQuery {
             label: Some("wave_query"),
             layout: &pipeline.get_bind_group_layout(0),
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: B::TextureView(&ocean.displacement_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: B::TextureView(&ocean.derivatives_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: B::Sampler(&sampler) },
-                wgpu::BindGroupEntry { binding: 3, resource: points.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: results.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: params.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: B::TextureView(&ocean.displacement_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: B::TextureView(&ocean.derivatives_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: B::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: points.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: results.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: params.as_entire_binding(),
+                },
             ],
         });
         let slots = (0..SLOTS)
@@ -151,10 +180,17 @@ impl WaveQuery {
         let n = self.requested.len();
         let flat: Vec<[f32; 2]> = self.requested.iter().map(|p| p.to_array()).collect();
         self.queue.write_buffer(&self.points, 0, bytemuck::cast_slice(&flat));
-        let p = QueryParams { count: n as u32, _pad: [0; 3], sizes: CASCADE_SIZES_M };
+        let p = QueryParams {
+            count: n as u32,
+            _pad: [0; 3],
+            sizes: CASCADE_SIZES_M,
+        };
         self.queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&p));
         {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("wave query"), timestamp_writes: None });
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("wave query"),
+                timestamp_writes: None,
+            });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.dispatch_workgroups((n as u32).div_ceil(64), 1, 1);
@@ -170,9 +206,11 @@ impl WaveQuery {
         let slot = &self.slots[i];
         slot.state.store(MAPPING, Ordering::Release);
         let state = slot.state.clone();
-        slot.staging.slice(..(slot.count * 16) as u64).map_async(wgpu::MapMode::Read, move |r| {
-            state.store(if r.is_ok() { MAPPED } else { IDLE }, Ordering::Release);
-        });
+        slot.staging
+            .slice(..(slot.count * 16) as u64)
+            .map_async(wgpu::MapMode::Read, move |r| {
+                state.store(if r.is_ok() { MAPPED } else { IDLE }, Ordering::Release);
+            });
     }
 
     /// The newest finished results, if any arrived since the last call (non-blocking).
@@ -187,7 +225,8 @@ impl WaveQuery {
                 continue;
             }
             let range = ..(slot.count * 16) as u64;
-            let data: Vec<[f32; 4]> = bytemuck::cast_slice(&slot.staging.slice(range).get_mapped_range().expect("mapped query")).to_vec();
+            let data: Vec<[f32; 4]> =
+                bytemuck::cast_slice(&slot.staging.slice(range).get_mapped_range().expect("mapped query")).to_vec();
             slot.staging.unmap();
             slot.state.store(IDLE, Ordering::Release);
             newest = Some(data.iter().map(|r| (r[0], Vec3::new(r[1], r[2], r[3]))).collect());

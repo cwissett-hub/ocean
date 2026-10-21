@@ -45,7 +45,9 @@ fn ray_hits_single_triangle() {
             flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
             update_mode: wgpu::AccelerationStructureUpdateMode::Build,
         },
-        wgpu::BlasGeometrySizeDescriptors::Triangles { descriptors: vec![size.clone()] },
+        wgpu::BlasGeometrySizeDescriptors::Triangles {
+            descriptors: vec![size.clone()],
+        },
     );
     let mut tlas = d.create_tlas(&wgpu::CreateTlasDescriptor {
         label: Some("tlas"),
@@ -53,7 +55,12 @@ fn ray_hits_single_triangle() {
         flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
         update_mode: wgpu::AccelerationStructureUpdateMode::Build,
     });
-    tlas[0] = Some(wgpu::TlasInstance::new(&blas, [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0], 0, 0xFF));
+    tlas[0] = Some(wgpu::TlasInstance::new(
+        &blas,
+        [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        0,
+        0xFF,
+    ));
 
     let out = d.create_buffer(&wgpu::BufferDescriptor {
         label: Some("out"),
@@ -77,8 +84,14 @@ fn ray_hits_single_triangle() {
         label: None,
         layout: &pipeline.get_bind_group_layout(0),
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: tlas.as_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: tlas.as_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: out.as_entire_binding(),
+            },
         ],
     });
     let mut enc = d.create_command_encoder(&Default::default());

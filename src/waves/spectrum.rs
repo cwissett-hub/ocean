@@ -126,8 +126,18 @@ pub fn spreading(theta: f32, s: f32) -> f32 {
 
 /// `[k_lo, k_hi)` owned by cascade i, so no wavenumber is counted twice.
 pub fn cascade_band(i: usize) -> (f32, f32) {
-    let lo = |c: usize| if c == 0 { 0.0 } else { std::f32::consts::TAU * BAND_CYCLES / CASCADE_SIZES_M[c] };
-    let hi = if i + 1 < CASCADE_SIZES_M.len() { lo(i + 1) } else { std::f32::consts::PI * N as f32 / CASCADE_SIZES_M[i] };
+    let lo = |c: usize| {
+        if c == 0 {
+            0.0
+        } else {
+            std::f32::consts::TAU * BAND_CYCLES / CASCADE_SIZES_M[c]
+        }
+    };
+    let hi = if i + 1 < CASCADE_SIZES_M.len() {
+        lo(i + 1)
+    } else {
+        std::f32::consts::PI * N as f32 / CASCADE_SIZES_M[i]
+    };
     (lo(i), hi)
 }
 
@@ -336,7 +346,12 @@ pub(crate) mod tests {
     fn spectrum_finite_at_extremes() {
         for (w, f) in [(25.0, 10.0), (0.5, 500.0), (25.0, 500.0), (0.5, 10.0)] {
             for swell in [0.0, 1.0] {
-                let p = OceanParams { wind_speed: w, fetch_km: f, swell_amount: swell, ..Default::default() };
+                let p = OceanParams {
+                    wind_speed: w,
+                    fetch_km: f,
+                    swell_amount: swell,
+                    ..Default::default()
+                };
                 let s = build_spectrum(&p, 7);
                 assert!(
                     s.h0.iter().flatten().flatten().all(|v| v.is_finite()),
@@ -394,9 +409,19 @@ mod slope_tests {
     #[test]
     fn resolved_slopes_stay_below_cox_munk() {
         for wind in [3.0, 5.0, 10.0, 20.0] {
-            let s = build_spectrum(&OceanParams { wind_speed: wind, swell_amount: 0.0, ..Default::default() }, 1);
+            let s = build_spectrum(
+                &OceanParams {
+                    wind_speed: wind,
+                    swell_amount: 0.0,
+                    ..Default::default()
+                },
+                1,
+            );
             let total: f32 = slope_variance(&s).iter().sum();
-            assert!(total > 0.0 && total < 1.2 * cox_munk_variance(wind), "wind {wind}: {total}");
+            assert!(
+                total > 0.0 && total < 1.2 * cox_munk_variance(wind),
+                "wind {wind}: {total}"
+            );
         }
     }
 
@@ -468,11 +493,10 @@ mod height_tests {
 
 /// Significant wave height 4·√(height variance) of the whole built spectrum, metres.
 pub fn spectrum_significant_height(s: &SpectrumSet) -> f32 {
-    let var: f64 = s
-        .h0
-        .iter()
-        .flatten()
-        .map(|[a, b, c, d]| (a * a + b * b + c * c + d * d) as f64)
-        .sum();
+    let var: f64 =
+        s.h0.iter()
+            .flatten()
+            .map(|[a, b, c, d]| (a * a + b * b + c * c + d * d) as f64)
+            .sum();
     4.0 * var.sqrt() as f32
 }

@@ -169,7 +169,12 @@ mod tests {
     use wgpu::DeviceType::{Cpu, DiscreteGpu, IntegratedGpu};
 
     fn cand(name: &str, device_type: wgpu::DeviceType, backend: wgpu::Backend, ray_query: bool) -> AdapterCandidate {
-        AdapterCandidate { name: name.to_string(), device_type, backend, ray_query }
+        AdapterCandidate {
+            name: name.to_string(),
+            device_type,
+            backend,
+            ray_query,
+        }
     }
 
     const NV: &str = "NVIDIA RTX 2000 Ada Generation Laptop GPU";
@@ -189,7 +194,10 @@ mod tests {
 
     #[test]
     fn discrete_without_ray_query_still_beats_integrated() {
-        let c = vec![cand(ARC, IntegratedGpu, Vulkan, true), cand(NV, DiscreteGpu, Vulkan, false)];
+        let c = vec![
+            cand(ARC, IntegratedGpu, Vulkan, true),
+            cand(NV, DiscreteGpu, Vulkan, false),
+        ];
         let ch = select_adapter(&c).unwrap();
         assert_eq!(ch.index, 1);
         assert!(!ch.rt_available);
@@ -207,7 +215,10 @@ mod tests {
 
     #[test]
     fn cpu_adapter_never_chosen_when_gpu_exists() {
-        let c = vec![cand("Microsoft Basic Render Driver", Cpu, Dx12, false), cand(ARC, IntegratedGpu, Dx12, false)];
+        let c = vec![
+            cand("Microsoft Basic Render Driver", Cpu, Dx12, false),
+            cand(ARC, IntegratedGpu, Dx12, false),
+        ];
         assert_eq!(select_adapter(&c).unwrap().index, 1);
     }
 

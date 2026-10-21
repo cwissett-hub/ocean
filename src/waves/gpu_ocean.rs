@@ -51,10 +51,19 @@ pub struct GpuOcean {
     foam_current: usize,
 }
 
-fn array_texture(d: &wgpu::Device, label: &str, format: wgpu::TextureFormat, usage: wgpu::TextureUsages) -> wgpu::Texture {
+fn array_texture(
+    d: &wgpu::Device,
+    label: &str,
+    format: wgpu::TextureFormat,
+    usage: wgpu::TextureUsages,
+) -> wgpu::Texture {
     d.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
-        size: wgpu::Extent3d { width: N as u32, height: N as u32, depth_or_array_layers: CASCADES },
+        size: wgpu::Extent3d {
+            width: N as u32,
+            height: N as u32,
+            depth_or_array_layers: CASCADES,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -87,13 +96,19 @@ fn compute(
         layout: None,
         module: &module,
         entry_point: Some("main"),
-        compilation_options: wgpu::PipelineCompilationOptions { constants, ..Default::default() },
+        compilation_options: wgpu::PipelineCompilationOptions {
+            constants,
+            ..Default::default()
+        },
         cache: None,
     });
     let entries: Vec<_> = resources
         .iter()
         .enumerate()
-        .map(|(i, r)| wgpu::BindGroupEntry { binding: i as u32, resource: r.clone() })
+        .map(|(i, r)| wgpu::BindGroupEntry {
+            binding: i as u32,
+            resource: r.clone(),
+        })
         .collect();
     let bg = d.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(label),
@@ -137,8 +152,20 @@ impl GpuOcean {
             &[T(&h0v), T(&omv), T(&v[0]), T(&v[1]), params.as_entire_binding()],
         );
         let fft_src = &src("fft");
-        let fft_h = compute(d, "fft rows", fft_src, &[("HORIZONTAL", 1.0)], &[T(&v[0]), T(&v[1]), T(&v[2]), T(&v[3])]);
-        let fft_v = compute(d, "fft cols", fft_src, &[("HORIZONTAL", 0.0)], &[T(&v[2]), T(&v[3]), T(&v[0]), T(&v[1])]);
+        let fft_h = compute(
+            d,
+            "fft rows",
+            fft_src,
+            &[("HORIZONTAL", 1.0)],
+            &[T(&v[0]), T(&v[1]), T(&v[2]), T(&v[3])],
+        );
+        let fft_v = compute(
+            d,
+            "fft cols",
+            fft_src,
+            &[("HORIZONTAL", 0.0)],
+            &[T(&v[2]), T(&v[3]), T(&v[0]), T(&v[1])],
+        );
         let assemble = compute(
             d,
             "assemble",
@@ -149,7 +176,11 @@ impl GpuOcean {
         let foam_tex = |label| {
             d.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
-                size: wgpu::Extent3d { width: FOAM_RES, height: FOAM_RES, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: FOAM_RES,
+                    height: FOAM_RES,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -218,18 +249,44 @@ impl GpuOcean {
     /// Uploads new initial amplitudes (after a wind / fetch / swell change).
     pub fn set_spectrum(&self, queue: &wgpu::Queue, spectrum: &SpectrumSet) {
         for c in 0..CASCADES as usize {
-            let origin = wgpu::Origin3d { x: 0, y: 0, z: c as u32 };
-            let size = wgpu::Extent3d { width: N as u32, height: N as u32, depth_or_array_layers: 1 };
+            let origin = wgpu::Origin3d {
+                x: 0,
+                y: 0,
+                z: c as u32,
+            };
+            let size = wgpu::Extent3d {
+                width: N as u32,
+                height: N as u32,
+                depth_or_array_layers: 1,
+            };
             queue.write_texture(
-                wgpu::TexelCopyTextureInfo { texture: &self.h0, mip_level: 0, origin, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.h0,
+                    mip_level: 0,
+                    origin,
+                    aspect: wgpu::TextureAspect::All,
+                },
                 bytemuck::cast_slice(&spectrum.h0[c]),
-                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(N as u32 * 16), rows_per_image: None },
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(N as u32 * 16),
+                    rows_per_image: None,
+                },
                 size,
             );
             queue.write_texture(
-                wgpu::TexelCopyTextureInfo { texture: &self.omega, mip_level: 0, origin, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.omega,
+                    mip_level: 0,
+                    origin,
+                    aspect: wgpu::TextureAspect::All,
+                },
                 bytemuck::cast_slice(&spectrum.omega[c]),
-                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(N as u32 * 4), rows_per_image: None },
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(N as u32 * 4),
+                    rows_per_image: None,
+                },
                 size,
             );
         }
@@ -250,7 +307,10 @@ impl GpuOcean {
         };
         self.queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&p));
         let n = N as u32;
-        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("ocean sim"), timestamp_writes: None });
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("ocean sim"),
+            timestamp_writes: None,
+        });
         for ((pipeline, bg), groups) in [
             (&self.update, (n / WG, n / WG, CASCADES)),
             (&self.fft_h, (1, n, CASCADES)),
@@ -283,7 +343,10 @@ impl GpuOcean {
 
     /// Blocking readback of the latest foam amounts (FOAM_RES², row-major). Tests only.
     pub fn read_foam(&self, ctx: &GpuContext) -> Vec<f32> {
-        read_rgba16(ctx, self.foam_views[self.foam_current].texture(), 0, FOAM_RES).into_iter().map(|t| t[0]).collect()
+        read_rgba16(ctx, self.foam_views[self.foam_current].texture(), 0, FOAM_RES)
+            .into_iter()
+            .map(|t| t[0])
+            .collect()
     }
 
     /// Blocking readback of one cascade's displacement (Dx, height, Dz, ∂Dx/∂z). Tests only.
@@ -315,12 +378,21 @@ fn read_rgba16(ctx: &GpuContext, tex: &wgpu::Texture, layer: u32, size: u32) -> 
         },
         wgpu::TexelCopyBufferInfo {
             buffer: &buf,
-            layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: None },
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: None,
+            },
         },
-        wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
     );
     ctx.queue.submit([enc.finish()]);
-    buf.slice(..).map_async(wgpu::MapMode::Read, |r| r.expect("map readback"));
+    buf.slice(..)
+        .map_async(wgpu::MapMode::Read, |r| r.expect("map readback"));
     ctx.device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
     let data = buf.slice(..).get_mapped_range().expect("mapped range");
     let halves: &[u16] = bytemuck::cast_slice(&data);

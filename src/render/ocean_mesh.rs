@@ -46,7 +46,10 @@ impl OceanMesh {
             contents: bytemuck::cast_slice(&idx),
             usage: wgpu::BufferUsages::INDEX,
         });
-        OceanMesh { indices, index_count: idx.len() as u32 }
+        OceanMesh {
+            indices,
+            index_count: idx.len() as u32,
+        }
     }
 }
 
@@ -89,7 +92,10 @@ mod tests {
                 let half = GRID as f32 / 2.0 * level_cell(l);
                 let half_fine = GRID as f32 / 2.0 * level_cell(l - 1);
                 let d = (level_center(cam, l - 1) - level_center(cam, l)).abs();
-                assert!((d + half_fine).max_element() <= half - level_cell(l) + 1e-3, "level {l}");
+                assert!(
+                    (d + half_fine).max_element() <= half - level_cell(l) + 1e-3,
+                    "level {l}"
+                );
             }
         }
     }

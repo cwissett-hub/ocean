@@ -23,7 +23,10 @@ pub struct RtPatchConfig {
 
 impl Default for RtPatchConfig {
     fn default() -> Self {
-        RtPatchConfig { size_m: 512.0, grid: 512 }
+        RtPatchConfig {
+            size_m: 512.0,
+            grid: 512,
+        }
     }
 }
 
@@ -93,7 +96,9 @@ fn patch_blas(d: &wgpu::Device, size: &wgpu::BlasTriangleGeometrySizeDescriptor)
             flags: wgpu::AccelerationStructureFlags::PREFER_FAST_BUILD | wgpu::AccelerationStructureFlags::ALLOW_UPDATE,
             update_mode: wgpu::AccelerationStructureUpdateMode::PreferUpdate,
         },
-        wgpu::BlasGeometrySizeDescriptors::Triangles { descriptors: vec![size.clone()] },
+        wgpu::BlasGeometrySizeDescriptors::Triangles {
+            descriptors: vec![size.clone()],
+        },
     )
 }
 
@@ -104,7 +109,14 @@ fn instance_transform(m: Mat4) -> [f32; 12] {
 }
 
 impl RtScene {
-    pub fn new(ctx: &GpuContext, lib: &ShaderLibrary, ocean: &GpuOcean, buoy: (&wgpu::Buffer, &wgpu::Buffer, u32), buoy_vertices: u32, cfg: RtPatchConfig) -> RtScene {
+    pub fn new(
+        ctx: &GpuContext,
+        lib: &ShaderLibrary,
+        ocean: &GpuOcean,
+        buoy: (&wgpu::Buffer, &wgpu::Buffer, u32),
+        buoy_vertices: u32,
+        cfg: RtPatchConfig,
+    ) -> RtScene {
         let d = &ctx.device;
         let n_verts = (cfg.grid + 1) * (cfg.grid + 1);
         let vertices = d.create_buffer(&wgpu::BufferDescriptor {
@@ -149,10 +161,22 @@ impl RtScene {
             label: Some("rt_patch"),
             layout: &pipeline.get_bind_group_layout(0),
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&ocean.displacement_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: vertices.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: params.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&ocean.displacement_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: vertices.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: params.as_entire_binding(),
+                },
             ],
         });
         let patch_size = wgpu::BlasTriangleGeometrySizeDescriptor {
@@ -175,7 +199,9 @@ impl RtScene {
                 flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
                 update_mode: wgpu::AccelerationStructureUpdateMode::Build,
             },
-            wgpu::BlasGeometrySizeDescriptors::Triangles { descriptors: vec![buoy_size.clone()] },
+            wgpu::BlasGeometrySizeDescriptors::Triangles {
+                descriptors: vec![buoy_size.clone()],
+            },
         );
         let tlas = d.create_tlas(&wgpu::CreateTlasDescriptor {
             label: Some("scene tlas"),
@@ -228,7 +254,13 @@ impl RtScene {
     }
 
     /// Writes this frame's patch at `origin`, refits/rebuilds its BLAS and rebuilds the TLAS.
-    pub fn record(&mut self, enc: &mut wgpu::CommandEncoder, origin: Vec2, buoy: Mat4, buoy_geometry: (&wgpu::Buffer, &wgpu::Buffer)) {
+    pub fn record(
+        &mut self,
+        enc: &mut wgpu::CommandEncoder,
+        origin: Vec2,
+        buoy: Mat4,
+        buoy_geometry: (&wgpu::Buffer, &wgpu::Buffer),
+    ) {
         let p = PatchParams {
             origin: origin.to_array(),
             cell: self.cfg.cell(),
@@ -238,7 +270,10 @@ impl RtScene {
         };
         self.queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&p));
         {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("rt patch"), timestamp_writes: None });
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("rt patch"),
+                timestamp_writes: None,
+            });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
             let g = (self.cfg.grid + 1).div_ceil(16);
@@ -273,7 +308,12 @@ impl RtScene {
         };
         let identity = instance_transform(Mat4::IDENTITY);
         self.tlas[0] = Some(wgpu::TlasInstance::new(&self.patch_blas, identity, PATCH_ID, 0x01));
-        self.tlas[1] = Some(wgpu::TlasInstance::new(&self.buoy_blas, instance_transform(buoy), BUOY_ID, 0x02));
+        self.tlas[1] = Some(wgpu::TlasInstance::new(
+            &self.buoy_blas,
+            instance_transform(buoy),
+            BUOY_ID,
+            0x02,
+        ));
         let mut entries = vec![wgpu::BlasBuildEntry {
             blas: &self.patch_blas,
             geometry: wgpu::BlasGeometries::TriangleGeometries(vec![patch_geo]),
@@ -302,7 +342,10 @@ mod tests {
     #[test]
     fn origin_snaps_to_cells() {
         let cfg = RtPatchConfig::default();
-        for (cam, yaw) in [(Vec3::new(0.0, 18.0, 0.0), 30.0), (Vec3::new(123.4, 18.0, -56.7), 200.0)] {
+        for (cam, yaw) in [
+            (Vec3::new(0.0, 18.0, 0.0), 30.0),
+            (Vec3::new(123.4, 18.0, -56.7), 200.0),
+        ] {
             let o = patch_origin(cam, fwd(yaw), &cfg) / cfg.cell();
             assert!((o - o.round()).abs().max_element() < 1e-3, "{o}");
         }
@@ -321,7 +364,10 @@ mod tests {
             // The nearest visible water (~13 m ahead) and the buoy (35 m) are inside.
             for d in [13.0, 35.0, 100.0] {
                 let p = Vec2::new(cam.x, cam.z) + f2 * d;
-                assert!(p.x > o.x && p.y > o.y && p.x < o.x + cfg.size_m && p.y < o.y + cfg.size_m, "yaw {yaw} d {d}");
+                assert!(
+                    p.x > o.x && p.y > o.y && p.x < o.x + cfg.size_m && p.y < o.y + cfg.size_m,
+                    "yaw {yaw} d {d}"
+                );
             }
         }
     }

@@ -17,7 +17,10 @@ fn sample(f: &OceanField, c: usize, p: Vec2) -> Vec3 {
     let (x0, z0) = (t.x.floor(), t.y.floor());
     let (fx, fz) = (t.x - x0, t.y - z0);
     let at = |x: f32, z: f32| {
-        let (xi, zi) = ((x as i64).rem_euclid(N as i64) as usize, (z as i64).rem_euclid(N as i64) as usize);
+        let (xi, zi) = (
+            (x as i64).rem_euclid(N as i64) as usize,
+            (z as i64).rem_euclid(N as i64) as usize,
+        );
         Vec3::from(f.disp[zi * N + xi])
     };
     let a = at(x0, z0).lerp(at(x0 + 1.0, z0), fx);
@@ -29,7 +32,10 @@ fn sample(f: &OceanField, c: usize, p: Vec2) -> Vec3 {
 fn query_matches_rendered_surface() {
     let ctx = GpuContext::new_headless().expect("gpu");
     let lib = ShaderLibrary::embedded();
-    let p = OceanParams { wind_speed: 9.0, ..Default::default() };
+    let p = OceanParams {
+        wind_speed: 9.0,
+        ..Default::default()
+    };
     let spectrum = build_spectrum(&p, 42);
     let t = 5.3;
     let mut gpu = GpuOcean::new(&ctx, &lib, &spectrum);
@@ -39,9 +45,15 @@ fn query_matches_rendered_surface() {
 
     let cpu = CpuOcean::new(&spectrum, p.choppiness);
     let fields: Vec<_> = (0..QUERY_CASCADES).map(|c| cpu.evaluate(c, t)).collect();
-    let disp_at = |q: Vec2| (0..QUERY_CASCADES).map(|c| sample(&fields[c], c, q)).fold(Vec3::ZERO, |a, b| a + b);
+    let disp_at = |q: Vec2| {
+        (0..QUERY_CASCADES)
+            .map(|c| sample(&fields[c], c, q))
+            .fold(Vec3::ZERO, |a, b| a + b)
+    };
 
-    let points: Vec<Vec2> = (0..32).map(|i| Vec2::new(i as f32 * 13.7 - 200.0, (i * i) as f32 * 0.91 - 150.0)).collect();
+    let points: Vec<Vec2> = (0..32)
+        .map(|i| Vec2::new(i as f32 * 13.7 - 200.0, (i * i) as f32 * 0.91 - 150.0))
+        .collect();
     let mut query = WaveQuery::new(&ctx, &lib, &gpu);
     let got = query.read_blocking(&ctx, &points);
     assert_eq!(got.len(), points.len());

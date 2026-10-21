@@ -4,7 +4,11 @@ use ocean::waves::cpu_ocean::CpuOcean;
 use ocean::waves::spectrum::{CASCADE_SIZES_M, N, build_spectrum};
 fn main() {
     for (wind, chop) in [(5.0f32, 0.9f32), (10.0, 0.9), (15.0, 0.9), (20.0, 0.9)] {
-        let p = OceanParams { wind_speed: wind, choppiness: chop, ..Default::default() };
+        let p = OceanParams {
+            wind_speed: wind,
+            choppiness: chop,
+            ..Default::default()
+        };
         let o = CpuOcean::new(&build_spectrum(&p, 42), p.choppiness);
         let f: Vec<_> = (0..3).map(|c| o.evaluate(c, 0.0)).collect();
         let mut js = Vec::new();
@@ -23,6 +27,13 @@ fn main() {
         let n = js.len() as f32;
         let frac = |t: f32| js.iter().filter(|&&j| j < t).count() as f32 / n * 100.0;
         let min = js.iter().cloned().fold(f32::MAX, f32::min);
-        println!("wind {wind:>4}: min J {min:.3}  <0.7 {:.3}%  <0.6 {:.3}%  <0.5 {:.3}%  <0.4 {:.3}%  <0.3 {:.3}%", frac(0.7), frac(0.6), frac(0.5), frac(0.4), frac(0.3));
+        println!(
+            "wind {wind:>4}: min J {min:.3}  <0.7 {:.3}%  <0.6 {:.3}%  <0.5 {:.3}%  <0.4 {:.3}%  <0.3 {:.3}%",
+            frac(0.7),
+            frac(0.6),
+            frac(0.5),
+            frac(0.4),
+            frac(0.3)
+        );
     }
 }

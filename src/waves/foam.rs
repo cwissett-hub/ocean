@@ -93,7 +93,10 @@ mod tests {
 
     #[test]
     fn stays_within_bounds() {
-        let f = foam_params(&OceanParams { foam_amount: 2.0, ..Default::default() });
+        let f = foam_params(&OceanParams {
+            foam_amount: 2.0,
+            ..Default::default()
+        });
         for (prev, j, dt) in [(0.0, -5.0, 10.0), (3.9, -1.0, 1.0), (-1.0, 1.0, 0.1), (100.0, 1.0, 0.0)] {
             let v = foam_step(prev, j, f, dt);
             assert!((0.0..=FOAM_MAX).contains(&v), "prev {prev} j {j} dt {dt} -> {v}");
@@ -102,8 +105,16 @@ mod tests {
 
     #[test]
     fn foam_amount_raises_threshold() {
-        let lo = foam_params(&OceanParams { foam_amount: 0.0, ..Default::default() }).threshold;
-        let hi = foam_params(&OceanParams { foam_amount: 2.0, ..Default::default() }).threshold;
+        let lo = foam_params(&OceanParams {
+            foam_amount: 0.0,
+            ..Default::default()
+        })
+        .threshold;
+        let hi = foam_params(&OceanParams {
+            foam_amount: 2.0,
+            ..Default::default()
+        })
+        .threshold;
         assert!(lo < hi);
     }
 
@@ -116,7 +127,10 @@ mod tests {
     #[test]
     fn strong_wind_breaks_far_more() {
         let calm = breaking_fraction(&OceanParams::default());
-        let rough = breaking_fraction(&OceanParams { wind_speed: 15.0, ..Default::default() });
+        let rough = breaking_fraction(&OceanParams {
+            wind_speed: 15.0,
+            ..Default::default()
+        });
         assert!(rough > 0.002 && rough > 50.0 * calm, "calm {calm} rough {rough}");
     }
 

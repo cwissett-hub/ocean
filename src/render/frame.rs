@@ -5,23 +5,23 @@ use glam::{Mat4, Vec2, Vec3};
 
 use crate::gpu::adapter::GpuContext;
 use crate::gpu::extent::render_extent;
+use crate::gpu::shaders::ShaderLibrary;
 use crate::gpu::timing::{GpuTimer, PassStats};
 use crate::params::OceanParams;
+use crate::render::buoy_pass::BuoyPass;
 use crate::render::gbuffer::{DEPTH_FORMAT, GBuffer, MATERIAL_FORMAT, MOTION_FORMAT, NORMAL_FORMAT};
 use crate::render::ocean_mesh::{BASE_CELL_M, GRID, LEVELS, OceanMesh};
-use crate::render::post::{Post, exposure_ev, exposure_multiplier};
 use crate::render::particles::{ParticleInputs, ParticleSystem};
+use crate::render::post::{Post, exposure_ev, exposure_multiplier};
 use crate::render::reflect::ReflectionPass;
 use crate::render::rt_scene::{RtPatchConfig, RtScene, patch_origin};
-use crate::gpu::shaders::ShaderLibrary;
 use crate::render::shade::ShadePass;
 use crate::render::sky::{SkyLuts, sun_direction};
-use crate::render::buoy_pass::BuoyPass;
 use crate::scene::buoy::{BuoyBody, build_buoy_mesh};
 use crate::scene::camera::{Camera, CameraRig, FixedCamera};
-use crate::waves::query::{WaterSample, WaveQuery};
 use crate::waves::foam::foam_params;
 use crate::waves::gpu_ocean::GpuOcean;
+use crate::waves::query::{WaterSample, WaveQuery};
 use crate::waves::spectrum::{
     CASCADE_SIZES_M, REPEAT_PERIOD_S, SpectrumSet, build_spectrum, cascade_band, slope_variance,
     spectrum_significant_height, unresolved_slope_variance,
@@ -56,7 +56,12 @@ struct SpectrumKey {
 
 impl SpectrumKey {
     fn of(p: &OceanParams) -> Self {
-        SpectrumKey { wind_speed: p.wind_speed, wind_dir_deg: p.wind_dir_deg, fetch_km: p.fetch_km, swell_amount: p.swell_amount }
+        SpectrumKey {
+            wind_speed: p.wind_speed,
+            wind_dir_deg: p.wind_dir_deg,
+            fetch_km: p.fetch_km,
+            swell_amount: p.swell_amount,
+        }
     }
 }
 
@@ -195,11 +200,26 @@ impl Renderer {
                 label: Some("ocean gbuffer"),
                 layout: &layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: B::TextureView(&ocean.displacement_view) },
-                    wgpu::BindGroupEntry { binding: 2, resource: B::TextureView(&ocean.derivatives_view) },
-                    wgpu::BindGroupEntry { binding: 3, resource: B::Sampler(&sampler) },
-                    wgpu::BindGroupEntry { binding: 4, resource: B::TextureView(&ocean.foam_views()[i]) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniforms.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: B::TextureView(&ocean.displacement_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: B::TextureView(&ocean.derivatives_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: B::Sampler(&sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: B::TextureView(&ocean.foam_views()[i]),
+                    },
                 ],
             })
         });
@@ -210,9 +230,7 @@ impl Renderer {
         });
         let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ocean_gbuffer"),
-            source: wgpu::ShaderSource::Wgsl(
-                lib.source("ocean_gbuffer").expect("shader source").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(lib.source("ocean_gbuffer").expect("shader source").into()),
         });
         let gbuffer_pipeline = d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("ocean gbuffer"),
@@ -223,7 +241,10 @@ impl Renderer {
                 compilation_options: Default::default(),
                 buffers: &[],
             },
-            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
                 depth_write_enabled: Some(true),
@@ -236,7 +257,11 @@ impl Renderer {
                 module: &module,
                 entry_point: Some("fs_ocean"),
                 compilation_options: Default::default(),
-                targets: &[Some(NORMAL_FORMAT.into()), Some(MATERIAL_FORMAT.into()), Some(MOTION_FORMAT.into())],
+                targets: &[
+                    Some(NORMAL_FORMAT.into()),
+                    Some(MATERIAL_FORMAT.into()),
+                    Some(MOTION_FORMAT.into()),
+                ],
             }),
             multiview_mask: None,
             cache: None,
@@ -249,11 +274,21 @@ impl Renderer {
         let buoy_mesh = build_buoy_mesh();
         let buoy = BuoyPass::new(d, &ctx.queue, lib, &layout, &buoy_mesh);
         let query = WaveQuery::new(ctx, lib, &ocean);
-        let camera = FixedCamera { yaw_deg: params.sun_azimuth_deg, ..Default::default() };
+        let camera = FixedCamera {
+            yaw_deg: params.sun_azimuth_deg,
+            ..Default::default()
+        };
         let anchor = buoy_anchor(&camera.pose());
         let mut reflections = reflections;
         let rt = ctx.rt_available.then(|| {
-            let scene = RtScene::new(ctx, lib, &ocean, buoy.geometry(), buoy_mesh.vertices.len() as u32, RtPatchConfig::default());
+            let scene = RtScene::new(
+                ctx,
+                lib,
+                &ocean,
+                buoy.geometry(),
+                buoy_mesh.vertices.len() as u32,
+                RtPatchConfig::default(),
+            );
             reflections.enable_rt(d, lib, &sky, &uniforms, &gbuffer, &scene);
             scene
         });
@@ -302,7 +337,11 @@ impl Renderer {
                     Some((prev, pt)) if t > pt => (heights[i] - prev[i]) / (t - pt),
                     _ => 0.0,
                 };
-                WaterSample { height: heights[i], normal: results[i].1, velocity: Vec3::new(0.0, vy, 0.0) }
+                WaterSample {
+                    height: heights[i],
+                    normal: results[i].1,
+                    velocity: Vec3::new(0.0, vy, 0.0),
+                }
             });
             self.last_heights = Some((heights, t));
             self.water = Some(samples);
@@ -318,8 +357,10 @@ impl Renderer {
         let want = internal_extent(self.surface_extent, scale);
         if want != self.gbuffer.extent {
             self.gbuffer = GBuffer::new(&self.device, want);
-            self.reflections.resize(&self.device, &self.uniforms, &self.gbuffer, self.rt.as_ref());
-            self.shade.rebind(&self.device, &self.uniforms, &self.gbuffer, self.reflections.views());
+            self.reflections
+                .resize(&self.device, &self.uniforms, &self.gbuffer, self.rt.as_ref());
+            self.shade
+                .rebind(&self.device, &self.uniforms, &self.gbuffer, self.reflections.views());
             self.post.resize(&self.device, &self.gbuffer);
             self.particles.resize(&self.device, &self.uniforms, &self.gbuffer);
             self.prev_view_proj = None;
@@ -378,14 +419,25 @@ impl Renderer {
             lambda_min: std::array::from_fn(|c| std::f32::consts::TAU / cascade_band(c).1),
             grid: [BASE_CELL_M, LEVELS as f32, GRID as f32, 0.0],
             slope_var: self.stats.slope_var,
-            misc: [self.stats.unresolved, self.stats.hs, exposure, params.wind_dir_deg.to_radians()],
+            misc: [
+                self.stats.unresolved,
+                self.stats.hs,
+                exposure,
+                params.wind_dir_deg.to_radians(),
+            ],
             resolution: [w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32],
         };
         self.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
 
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.timer.start(&mut enc);
-        self.ocean.update(&mut enc, t % REPEAT_PERIOD_S, params.choppiness, foam_params(&params), dt);
+        self.ocean.update(
+            &mut enc,
+            t % REPEAT_PERIOD_S,
+            params.choppiness,
+            foam_params(&params),
+            dt,
+        );
         self.query.record(&mut enc);
         self.timer.mark(&mut enc, "ocean sim");
         if let Some(rt) = &mut self.rt {
@@ -409,7 +461,11 @@ impl Renderer {
         self.timer.mark(&mut enc, "particle sim");
         self.sky.update(&mut enc, sun);
         self.timer.mark(&mut enc, "sky");
-        self.buoy.record_opaque(&mut enc, &self.gbuffer, &self.ocean_bind_groups[self.ocean.foam_index()]);
+        self.buoy.record_opaque(
+            &mut enc,
+            &self.gbuffer,
+            &self.ocean_bind_groups[self.ocean.foam_index()],
+        );
         {
             let g = &self.gbuffer;
             let color = |view| {
@@ -417,7 +473,10 @@ impl Renderer {
                     view,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
                 })
             };
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -425,7 +484,10 @@ impl Renderer {
                 color_attachments: &[color(&g.normal), color(&g.material), color(&g.motion)],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &g.depth,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
                     stencil_ops: None,
                 }),
                 ..Default::default()
@@ -434,12 +496,14 @@ impl Renderer {
             pass.set_bind_group(0, &self.ocean_bind_groups[self.ocean.foam_index()], &[]);
             pass.set_index_buffer(self.mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.mesh.index_count, 0, 0..LEVELS);
-            self.buoy.draw_gbuffer(&mut pass, &self.ocean_bind_groups[self.ocean.foam_index()]);
+            self.buoy
+                .draw_gbuffer(&mut pass, &self.ocean_bind_groups[self.ocean.foam_index()]);
         }
         self.timer.mark(&mut enc, "gbuffer");
         self.reflections.record(&mut enc, params.reflection_mode, &self.sky);
         self.timer.mark(&mut enc, "reflections");
-        self.shade.record(&mut enc, &self.gbuffer, &self.sky, self.reflections.index());
+        self.shade
+            .record(&mut enc, &self.gbuffer, &self.sky, self.reflections.index());
         self.particles.draw(&mut enc, &self.gbuffer.hdr, &self.sky);
         self.gbuffer.record_history(&mut enc);
         self.timer.mark(&mut enc, "shade");

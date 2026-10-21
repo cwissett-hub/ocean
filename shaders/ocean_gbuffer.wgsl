@@ -1,33 +1,13 @@
-// Ocean surface: nested camera-centred grids displaced by the four FFT cascades.
-// Task 3: forward-shaded placeholder (sky gradient reflection, sun glint, deep-water colour).
+// Ocean surface into the G-buffer: nested camera-centred grids displaced by the four FFT
+// cascades. Needs frame_common.wgsl.
 
-struct Frame {
-    view_proj: mat4x4<f32>,
-    inv_view_proj: mat4x4<f32>,
-    cam_pos: vec4<f32>,     // xyz, time
-    sun_dir: vec4<f32>,     // xyz
-    sizes: vec4<f32>,       // cascade patch sizes, m
-    lambda_min: vec4<f32>,  // shortest wavelength in each cascade's band, m
-    grid: vec4<f32>,        // base cell m, levels, grid quads per side, 0
-};
-
-@group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var displacement: texture_2d_array<f32>;
 @group(0) @binding(2) var derivatives: texture_2d_array<f32>;
 @group(0) @binding(3) var samp: sampler;
 
-const N: f32 = 256.0;
-
-// --- shared helpers -----------------------------------------------------------------------
-
 fn level_center(cam_xz: vec2<f32>, cell: f32) -> vec2<f32> {
     let snap = 2.0 * cell;
     return round(cam_xz / snap) * snap;
-}
-
-// Texel (x, z) of a cascade holds world point (x, z)·L/N; texel centres sit at +0.5 texel.
-fn cascade_uv(p: vec2<f32>, c: u32) -> vec2<f32> {
-    return p / frame.sizes[c] + vec2<f32>(0.5 / N);
 }
 
 // Cascades whose shortest waves are below the vertex spacing would alias; fade them out.
@@ -46,43 +26,6 @@ fn displacement_at(p: vec2<f32>, cell: f32) -> vec3<f32> {
     }
     return d;
 }
-
-fn sky(dir: vec3<f32>, sun_weight: f32) -> vec3<f32> {
-    let sun = frame.sun_dir.xyz;
-    let y = max(dir.y, 0.0);
-    let horizon = vec3<f32>(1.0, 0.42, 0.16);
-    let zenith = vec3<f32>(0.10, 0.09, 0.26);
-    var c = mix(horizon, zenith, pow(y, 0.45));
-    let sd = max(dot(dir, sun), 0.0);
-    c += sun_weight * vec3<f32>(1.0, 0.5, 0.2) * pow(sd, 8.0) * 0.6;
-    c += sun_weight * vec3<f32>(1.0, 0.85, 0.6) * pow(sd, 3000.0) * 30.0;
-    return c;
-}
-
-// --- sky background -----------------------------------------------------------------------
-
-struct SkyOut {
-    @builtin(position) pos: vec4<f32>,
-    @location(0) ndc: vec2<f32>,
-};
-
-@vertex
-fn vs_sky(@builtin(vertex_index) i: u32) -> SkyOut {
-    let uv = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
-    var o: SkyOut;
-    o.ndc = uv * 2.0 - 1.0;
-    o.pos = vec4<f32>(o.ndc, 0.0, 1.0);
-    return o;
-}
-
-@fragment
-fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
-    let h = frame.inv_view_proj * vec4<f32>(in.ndc, 0.5, 1.0);
-    let dir = normalize(h.xyz / h.w - frame.cam_pos.xyz);
-    return vec4<f32>(sky(dir, 1.0), 1.0);
-}
-
-// --- ocean surface ------------------------------------------------------------------------
 
 struct OceanOut {
     @builtin(position) pos: vec4<f32>,
@@ -120,8 +63,14 @@ fn vs_ocean(@builtin(vertex_index) vi: u32, @builtin(instance_index) level: u32)
     return o;
 }
 
+struct GBufferOut {
+    @location(0) normal_var: vec4<f32>,   // world normal, total slope variance
+    @location(1) material: vec4<f32>,     // foam, material id (0 water), 0, 0
+    @location(2) motion: vec2<f32>,       // screen-space motion to the previous frame, pixels
+};
+
 @fragment
-fn fs_ocean(in: OceanOut) -> @location(0) vec4<f32> {
+fn fs_ocean(in: OceanOut) -> GBufferOut {
     // Footprint first: derivatives must be taken before any discard.
     let footprint = max(length(dpdx(in.grid_xz)), length(dpdy(in.grid_xz)));
     if (in.level > 0u) {
@@ -133,31 +82,27 @@ fn fs_ocean(in: OceanOut) -> @location(0) vec4<f32> {
         }
     }
 
+    // Resolved cascades shape the normal; unresolved ones become roughness, so the total
+    // slope variance (and so the width of the sun's glitter path) is preserved.
     var der = vec4<f32>(0.0);
+    var variance = frame.misc.x;
     for (var c = 0u; c < 4u; c++) {
-        let texel = frame.sizes[c] / N;
+        let texel = frame.sizes[c] / N_TEXELS;
         let w = 1.0 - smoothstep(texel, 4.0 * texel, footprint);
         if (w > 0.0) {
             der += w * textureSampleLevel(derivatives, samp, cascade_uv(in.grid_xz, c), c, 0.0);
         }
+        variance += (1.0 - w) * frame.slope_var[c];
     }
-    let n = normalize(vec3<f32>(-der.x / (1.0 + der.z), 1.0, -der.y / (1.0 + der.w)));
+    // Where a crest folds (1 + ∂D/∂x → 0) the normal would blow up; clamp the stretch.
+    let n = normalize(vec3<f32>(-der.x / max(1.0 + der.z, 0.2), 1.0, -der.y / max(1.0 + der.w, 0.2)));
 
-    let to_eye = frame.cam_pos.xyz - in.world;
-    let dist = length(to_eye);
-    let v = to_eye / dist;
-    let ndv = max(dot(n, v), 0.0);
-    let fresnel = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
-    let r0 = reflect(-v, n);
-    // Rays reflected below the horizon would hit other waves (ray tracing handles that
-    // later); here they see the horizon and cannot see the sun.
-    let r = normalize(vec3<f32>(r0.x, max(r0.y, 0.0), r0.z));
-    let sun = frame.sun_dir.xyz;
-    let above = smoothstep(0.0, 0.03, r0.y);
-    let glint = vec3<f32>(1.0, 0.75, 0.45) * pow(max(dot(r, sun), 0.0), 900.0) * 8.0 * above;
-    let deep = vec3<f32>(0.008, 0.035, 0.05) + vec3<f32>(0.05, 0.03, 0.01) * max(sun.y, 0.0);
-    var col = mix(deep, sky(r, above), fresnel) + glint;
-    let fog = 1.0 - exp(-dist / 6000.0);
-    col = mix(col, sky(normalize(vec3<f32>(-v.x, 0.02, -v.z)), 1.0), fog);
-    return vec4<f32>(col, 1.0);
+    let prev = frame.prev_view_proj * vec4<f32>(in.world, 1.0);
+    let prev_px = (vec2<f32>(prev.x, -prev.y) / prev.w * 0.5 + 0.5) * frame.resolution.xy;
+
+    var o: GBufferOut;
+    o.normal_var = vec4<f32>(n, variance);
+    o.material = vec4<f32>(0.0);
+    o.motion = prev_px - in.pos.xy;
+    return o;
 }

@@ -1,15 +1,23 @@
-//! Owns every pass and records one frame in order.
+//! Owns every pass and records one frame in order:
+//! wave sim → sky LUTs (if the sun moved) → G-buffer → shade (HDR) → bloom + tonemap.
 
-use glam::{Mat4, Vec3};
+use glam::Mat4;
 
 use crate::gpu::adapter::GpuContext;
+use crate::gpu::extent::render_extent;
 use crate::params::OceanParams;
+use crate::render::gbuffer::{DEPTH_FORMAT, GBuffer, MATERIAL_FORMAT, MOTION_FORMAT, NORMAL_FORMAT};
 use crate::render::ocean_mesh::{BASE_CELL_M, GRID, LEVELS, OceanMesh};
+use crate::render::post::{Post, exposure_ev, exposure_multiplier};
+use crate::render::shade::{FRAME_COMMON, ShadePass};
+use crate::render::sky::{SkyLuts, sun_direction};
 use crate::scene::camera::{CameraRig, FixedCamera};
 use crate::waves::gpu_ocean::GpuOcean;
-use crate::waves::spectrum::{CASCADE_SIZES_M, REPEAT_PERIOD_S, build_spectrum, cascade_band};
+use crate::waves::spectrum::{
+    CASCADE_SIZES_M, REPEAT_PERIOD_S, SpectrumSet, build_spectrum, cascade_band, slope_variance,
+    spectrum_significant_height, unresolved_slope_variance,
+};
 
-pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const SEED: u64 = 42;
 
 #[repr(C)]
@@ -17,52 +25,77 @@ const SEED: u64 = 42;
 struct FrameUniforms {
     view_proj: [[f32; 4]; 4],
     inv_view_proj: [[f32; 4]; 4],
+    prev_view_proj: [[f32; 4]; 4],
     cam_pos: [f32; 4],
     sun_dir: [f32; 4],
     sizes: [f32; 4],
     lambda_min: [f32; 4],
     grid: [f32; 4],
+    slope_var: [f32; 4],
+    misc: [f32; 4],
+    resolution: [f32; 4],
+}
+
+/// The parameters that change the wave spectrum (rebuilding it costs a few milliseconds).
+#[derive(PartialEq, Clone, Copy)]
+struct SpectrumKey {
+    wind_speed: f32,
+    wind_dir_deg: f32,
+    fetch_km: f32,
+    swell_amount: f32,
+}
+
+impl SpectrumKey {
+    fn of(p: &OceanParams) -> Self {
+        SpectrumKey { wind_speed: p.wind_speed, wind_dir_deg: p.wind_dir_deg, fetch_km: p.fetch_km, swell_amount: p.swell_amount }
+    }
+}
+
+struct SpectrumStats {
+    slope_var: [f32; 4],
+    unresolved: f32,
+    hs: f32,
+}
+
+impl SpectrumStats {
+    fn of(s: &SpectrumSet, p: &OceanParams) -> Self {
+        SpectrumStats {
+            slope_var: slope_variance(s),
+            unresolved: unresolved_slope_variance(s, p.wind_speed),
+            hs: spectrum_significant_height(s),
+        }
+    }
 }
 
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     ocean: GpuOcean,
+    sky: SkyLuts,
     mesh: OceanMesh,
     uniforms: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
-    sky_pipeline: wgpu::RenderPipeline,
-    ocean_pipeline: wgpu::RenderPipeline,
-    depth: wgpu::TextureView,
-    extent: (u32, u32),
+    ocean_bind_group: wgpu::BindGroup,
+    gbuffer_pipeline: wgpu::RenderPipeline,
+    gbuffer: GBuffer,
+    shade: ShadePass,
+    post: Post,
+    surface_extent: (u32, u32),
     camera: FixedCamera,
+    prev_view_proj: Option<Mat4>,
+    spectrum_key: SpectrumKey,
+    stats: SpectrumStats,
 }
 
-fn depth_view(device: &wgpu::Device, (w, h): (u32, u32)) -> wgpu::TextureView {
-    device
-        .create_texture(&wgpu::TextureDescriptor {
-            label: Some("depth"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        })
-        .create_view(&Default::default())
-}
-
-/// Temporary until the sky module owns it (Task 4).
-fn sun_dir(p: &OceanParams) -> Vec3 {
-    let (el, az) = (p.sun_elevation_deg.to_radians(), p.sun_azimuth_deg.to_radians());
-    Vec3::new(az.sin() * el.cos(), el.sin(), az.cos() * el.cos())
+fn internal_extent(surface: (u32, u32), scale: f32) -> (u32, u32) {
+    render_extent(surface.0, surface.1, scale).unwrap_or((1, 1))
 }
 
 impl Renderer {
-    pub fn new(ctx: &GpuContext, format: wgpu::TextureFormat, extent: (u32, u32), params: &OceanParams) -> Renderer {
+    pub fn new(ctx: &GpuContext, format: wgpu::TextureFormat, surface_extent: (u32, u32), params: &OceanParams) -> Renderer {
         let d = &ctx.device;
-        let ocean = GpuOcean::new(ctx, &build_spectrum(params, SEED));
+        let spectrum = build_spectrum(params, SEED);
+        let ocean = GpuOcean::new(ctx, &spectrum);
+        let sky = SkyLuts::new(ctx);
         let mesh = OceanMesh::new(d);
         let uniforms = d.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame uniforms"),
@@ -76,7 +109,6 @@ impl Renderer {
             address_mode_v: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         let vis = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
@@ -91,7 +123,7 @@ impl Renderer {
             count: None,
         };
         let layout = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("ocean frame"),
+            label: Some("ocean gbuffer"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -113,123 +145,160 @@ impl Renderer {
                 },
             ],
         });
-        let bind_group = d.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("ocean frame"),
+        use wgpu::BindingResource as B;
+        let ocean_bind_group = d.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ocean gbuffer"),
             layout: &layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&ocean.displacement_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&ocean.derivatives_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry { binding: 1, resource: B::TextureView(&ocean.displacement_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: B::TextureView(&ocean.derivatives_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: B::Sampler(&sampler) },
             ],
         });
-        let pipeline_layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("ocean frame"),
+        let pl = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ocean gbuffer"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ocean_gbuffer"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/ocean_gbuffer.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                format!("{FRAME_COMMON}\n{}", include_str!("../../shaders/ocean_gbuffer.wgsl")).into(),
+            ),
         });
-        let pipeline = |label, vs, fs, depth: Option<wgpu::DepthStencilState>| {
-            d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some(vs),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
-                depth_stencil: depth,
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some(fs),
-                    compilation_options: Default::default(),
-                    targets: &[Some(format.into())],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let depth_state = |write: bool, compare| wgpu::DepthStencilState {
-            format: DEPTH_FORMAT,
-            depth_write_enabled: Some(write),
-            depth_compare: Some(compare),
-            stencil: Default::default(),
-            bias: Default::default(),
-        };
-        let sky_pipeline = pipeline("sky", "vs_sky", "fs_sky", Some(depth_state(false, wgpu::CompareFunction::Always)));
-        let ocean_pipeline = pipeline("ocean", "vs_ocean", "fs_ocean", Some(depth_state(true, wgpu::CompareFunction::Greater)));
+        let gbuffer_pipeline = d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("ocean gbuffer"),
+            layout: Some(&pl),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_ocean"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_ocean"),
+                compilation_options: Default::default(),
+                targets: &[Some(NORMAL_FORMAT.into()), Some(MATERIAL_FORMAT.into()), Some(MOTION_FORMAT.into())],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let gbuffer = GBuffer::new(d, internal_extent(surface_extent, params.render_scale));
+        let shade = ShadePass::new(d, &uniforms, &sky, &gbuffer);
+        let post = Post::new(d, format, &gbuffer);
         Renderer {
             device: d.clone(),
             queue: ctx.queue.clone(),
             ocean,
+            sky,
             mesh,
             uniforms,
-            bind_group,
-            sky_pipeline,
-            ocean_pipeline,
-            depth: depth_view(d, extent),
-            extent,
+            ocean_bind_group,
+            gbuffer_pipeline,
+            gbuffer,
+            shade,
+            post,
+            surface_extent,
             camera: FixedCamera { yaw_deg: params.sun_azimuth_deg, ..Default::default() },
+            prev_view_proj: None,
+            spectrum_key: SpectrumKey::of(params),
+            stats: SpectrumStats::of(&spectrum, params),
         }
     }
 
-    pub fn resize(&mut self, extent: (u32, u32)) {
-        if extent != self.extent {
-            self.extent = extent;
-            self.depth = depth_view(&self.device, extent);
+    pub fn resize(&mut self, surface_extent: (u32, u32)) {
+        self.surface_extent = surface_extent;
+    }
+
+    fn ensure_targets(&mut self, scale: f32) {
+        let want = internal_extent(self.surface_extent, scale);
+        if want != self.gbuffer.extent {
+            self.gbuffer = GBuffer::new(&self.device, want);
+            self.shade.rebind(&self.device, &self.uniforms, &self.gbuffer);
+            self.post.resize(&self.device, &self.gbuffer);
+            self.prev_view_proj = None;
         }
     }
 
-    /// Records and submits one frame into `view` (same size as the last `resize`).
+    fn ensure_spectrum(&mut self, params: &OceanParams) {
+        let key = SpectrumKey::of(params);
+        if key != self.spectrum_key {
+            let s = build_spectrum(params, SEED);
+            self.ocean.set_spectrum(&self.queue, &s);
+            self.stats = SpectrumStats::of(&s, params);
+            self.spectrum_key = key;
+        }
+    }
+
+    /// Records and submits one frame into `view` (the surface texture).
     pub fn render(&mut self, view: &wgpu::TextureView, params: &OceanParams, t: f32, _dt: f32) {
+        let params = params.clamped();
+        self.ensure_targets(params.render_scale);
+        self.ensure_spectrum(&params);
         self.camera.yaw_deg = params.sun_azimuth_deg;
         let cam = self.camera.pose();
-        let aspect = self.extent.0 as f32 / self.extent.1 as f32;
-        let vp: Mat4 = cam.view_proj(aspect);
-        let s = sun_dir(params);
-        let lambda_min = std::array::from_fn(|c| std::f32::consts::TAU / cascade_band(c).1);
+        let (w, h) = self.gbuffer.extent;
+        let vp = cam.view_proj(w as f32 / h as f32);
+        let prev = self.prev_view_proj.unwrap_or(vp);
+        self.prev_view_proj = Some(vp);
+        let sun = sun_direction(params.sun_elevation_deg, params.sun_azimuth_deg);
+        let exposure = exposure_multiplier(exposure_ev(params.sun_elevation_deg));
         let u = FrameUniforms {
             view_proj: vp.to_cols_array_2d(),
             inv_view_proj: vp.inverse().to_cols_array_2d(),
+            prev_view_proj: prev.to_cols_array_2d(),
             cam_pos: [cam.position.x, cam.position.y, cam.position.z, t],
-            sun_dir: [s.x, s.y, s.z, 0.0],
+            sun_dir: [sun.x, sun.y, sun.z, 0.0],
             sizes: CASCADE_SIZES_M,
-            lambda_min,
+            lambda_min: std::array::from_fn(|c| std::f32::consts::TAU / cascade_band(c).1),
             grid: [BASE_CELL_M, LEVELS as f32, GRID as f32, 0.0],
+            slope_var: self.stats.slope_var,
+            misc: [self.stats.unresolved, self.stats.hs, exposure, 0.0],
+            resolution: [w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32],
         };
         self.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
 
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.ocean.update(&mut enc, t % REPEAT_PERIOD_S, params.choppiness);
+        self.sky.update(&mut enc, sun);
         {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("ocean forward"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            let g = &self.gbuffer;
+            let color = |view| {
+                Some(wgpu::RenderPassColorAttachment {
                     view,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
-                })],
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                })
+            };
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("gbuffer"),
+                color_attachments: &[color(&g.normal), color(&g.material), color(&g.motion)],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth,
+                    view: &g.depth,
                     depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
                     stencil_ops: None,
                 }),
                 ..Default::default()
             });
-            pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.set_pipeline(&self.sky_pipeline);
-            pass.draw(0..3, 0..1);
-            pass.set_pipeline(&self.ocean_pipeline);
+            pass.set_pipeline(&self.gbuffer_pipeline);
+            pass.set_bind_group(0, &self.ocean_bind_group, &[]);
             pass.set_index_buffer(self.mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.mesh.index_count, 0, 0..LEVELS);
         }
+        self.shade.record(&mut enc, &self.gbuffer, &self.sky);
+        self.post.record(&mut enc, &self.queue, view, exposure);
         self.queue.submit([enc.finish()]);
     }
 }

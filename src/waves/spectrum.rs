@@ -371,3 +371,108 @@ pub(crate) mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod slope_tests {
+    use super::*;
+    use crate::params::OceanParams;
+    use crate::waves::cpu_ocean::CpuOcean;
+
+    #[test]
+    fn slope_variance_matches_evaluated_field() {
+        let p = OceanParams::default();
+        let s = build_spectrum(&p, 42);
+        let var = slope_variance(&s);
+        let o = CpuOcean::new(&s, p.choppiness);
+        for (c, v) in var.iter().enumerate() {
+            let f = o.evaluate(c, 0.0);
+            let field = f.slope.iter().map(|d| d[0] * d[0] + d[1] * d[1]).sum::<f32>() / f.slope.len() as f32;
+            assert!((field - v).abs() / v < 0.02, "cascade {c}: field {field} spectrum {v}");
+        }
+    }
+
+    #[test]
+    fn resolved_slopes_stay_below_cox_munk() {
+        for wind in [3.0, 5.0, 10.0, 20.0] {
+            let s = build_spectrum(&OceanParams { wind_speed: wind, swell_amount: 0.0, ..Default::default() }, 1);
+            let total: f32 = slope_variance(&s).iter().sum();
+            assert!(total > 0.0 && total < 1.2 * cox_munk_variance(wind), "wind {wind}: {total}");
+        }
+    }
+
+    #[test]
+    fn cox_munk_known_value() {
+        assert!((cox_munk_variance(5.0) - 0.0286).abs() < 1e-4);
+    }
+
+    #[test]
+    fn unresolved_variance_is_positive() {
+        let s = build_spectrum(&OceanParams::default(), 1);
+        assert!(unresolved_slope_variance(&s, 5.0) >= MIN_UNRESOLVED_VARIANCE);
+    }
+}
+
+/// Expected mean-square slope (∂h/∂x² + ∂h/∂z²) of each cascade: Σ k²·(|h0(k)|² + |h0(−k)|²).
+/// The renderer adds a cascade's variance to surface roughness wherever that cascade is too
+/// fine to resolve, so filtering keeps the total slope statistics right.
+pub fn slope_variance(s: &SpectrumSet) -> [f32; 4] {
+    std::array::from_fn(|c| {
+        let mut v = 0.0f64;
+        for z in 0..N {
+            for x in 0..N {
+                let (kx, kz) = wavevector(c, x, z);
+                let k2 = (kx * kx + kz * kz) as f64;
+                let [a, b, cc, d] = s.h0[c][z * N + x];
+                v += k2 * ((a * a + b * b + cc * cc + d * d) as f64);
+            }
+        }
+        v as f32
+    })
+}
+
+/// Cox & Munk (1954) total mean-square slope of a wind-roughened sea.
+pub fn cox_munk_variance(wind: f32) -> f32 {
+    0.003 + 0.00512 * wind
+}
+
+pub const MIN_UNRESOLVED_VARIANCE: f32 = 0.0005;
+
+/// Slope variance of waves shorter than the finest cascade (capillaries), which only ever
+/// appear as roughness.
+pub fn unresolved_slope_variance(s: &SpectrumSet, wind: f32) -> f32 {
+    (cox_munk_variance(wind) - slope_variance(s).iter().sum::<f32>()).max(MIN_UNRESOLVED_VARIANCE)
+}
+
+#[cfg(test)]
+mod height_tests {
+    use super::*;
+    use crate::params::OceanParams;
+    use crate::waves::cpu_ocean::CpuOcean;
+
+    #[test]
+    fn spectrum_hs_matches_evaluated_field() {
+        let p = OceanParams::default();
+        let s = build_spectrum(&p, 42);
+        let o = CpuOcean::new(&s, p.choppiness);
+        let var: f32 = (0..4)
+            .map(|c| {
+                let f = o.evaluate(c, 0.0);
+                f.disp.iter().map(|d| d[1] * d[1]).sum::<f32>() / f.disp.len() as f32
+            })
+            .sum();
+        let field = 4.0 * var.sqrt();
+        let hs = spectrum_significant_height(&s);
+        assert!((field - hs).abs() / hs < 0.05, "field {field} spectrum {hs}");
+    }
+}
+
+/// Significant wave height 4·√(height variance) of the whole built spectrum, metres.
+pub fn spectrum_significant_height(s: &SpectrumSet) -> f32 {
+    let var: f64 = s
+        .h0
+        .iter()
+        .flatten()
+        .map(|[a, b, c, d]| (a * a + b * b + c * c + d * d) as f64)
+        .sum();
+    4.0 * var.sqrt() as f32
+}

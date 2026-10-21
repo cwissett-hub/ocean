@@ -1,7 +1,7 @@
 //! Owns every pass and records one frame in order:
 //! wave sim → sky LUTs (if the sun moved) → G-buffer → shade (HDR) → bloom + tonemap.
 
-use glam::Mat4;
+use glam::{Mat4, Vec2, Vec3};
 
 use crate::gpu::adapter::GpuContext;
 use crate::gpu::extent::render_extent;
@@ -14,7 +14,10 @@ use crate::render::reflect::ReflectionPass;
 use crate::gpu::shaders::ShaderLibrary;
 use crate::render::shade::ShadePass;
 use crate::render::sky::{SkyLuts, sun_direction};
-use crate::scene::camera::{CameraRig, FixedCamera};
+use crate::render::buoy_pass::BuoyPass;
+use crate::scene::buoy::{BuoyBody, build_buoy_mesh};
+use crate::scene::camera::{Camera, CameraRig, FixedCamera};
+use crate::waves::query::{WaterSample, WaveQuery};
 use crate::waves::foam::foam_params;
 use crate::waves::gpu_ocean::GpuOcean;
 use crate::waves::spectrum::{
@@ -91,6 +94,19 @@ pub struct Renderer {
     spectrum_key: SpectrumKey,
     stats: SpectrumStats,
     timer: GpuTimer,
+    buoy: BuoyPass,
+    buoy_body: BuoyBody,
+    query: WaveQuery,
+    /// Latest water samples under the buoy, and the heights/time they came from (for velocity).
+    water: Option<[WaterSample; 5]>,
+    last_heights: Option<([f32; 5], f32)>,
+}
+
+/// The buoy rides ~35 m ahead of the camera, a little to the right of the sun's glitter path.
+fn buoy_anchor(cam: &Camera) -> Vec2 {
+    let fwd = Vec2::new(cam.forward.x, cam.forward.z).normalize_or_zero();
+    let right = Vec2::new(fwd.y, -fwd.x);
+    Vec2::new(cam.position.x, cam.position.z) + fwd * 35.0 + right * 4.0
 }
 
 fn internal_extent(surface: (u32, u32), scale: f32) -> (u32, u32) {
@@ -224,7 +240,16 @@ impl Renderer {
         let reflections = ReflectionPass::new(d, lib, &ctx.queue, &uniforms, &gbuffer);
         let shade = ShadePass::new(d, lib, &uniforms, &sky, &gbuffer, reflections.views());
         let post = Post::new(d, lib, format, &gbuffer);
+        let buoy = BuoyPass::new(d, &ctx.queue, lib, &layout, &build_buoy_mesh());
+        let query = WaveQuery::new(ctx, lib, &ocean);
+        let camera = FixedCamera { yaw_deg: params.sun_azimuth_deg, ..Default::default() };
+        let anchor = buoy_anchor(&camera.pose());
         Renderer {
+            buoy,
+            buoy_body: BuoyBody::at(Vec3::new(anchor.x, 0.0, anchor.y)),
+            query,
+            water: None,
+            last_heights: None,
             device: d.clone(),
             queue: ctx.queue.clone(),
             ocean,
@@ -238,7 +263,7 @@ impl Renderer {
             shade,
             post,
             surface_extent,
-            camera: FixedCamera { yaw_deg: params.sun_azimuth_deg, ..Default::default() },
+            camera,
             prev_view_proj: None,
             spectrum_key: SpectrumKey::of(params),
             stats: SpectrumStats::of(&spectrum, params),
@@ -248,6 +273,30 @@ impl Renderer {
 
     pub fn resize(&mut self, surface_extent: (u32, u32)) {
         self.surface_extent = surface_extent;
+    }
+
+    /// Feeds the newest water samples to the buoy, steps it and queues the next query.
+    fn update_buoy(&mut self, cam: &Camera, t: f32, dt: f32) {
+        let anchor = buoy_anchor(cam);
+        self.buoy_body.position.x = anchor.x;
+        self.buoy_body.position.z = anchor.y;
+        if let Some(results) = self.query.poll(&self.device).filter(|r| r.len() == 5) {
+            let heights: [f32; 5] = std::array::from_fn(|i| results[i].0);
+            let samples = std::array::from_fn(|i| {
+                let vy = match self.last_heights {
+                    Some((prev, pt)) if t > pt => (heights[i] - prev[i]) / (t - pt),
+                    _ => 0.0,
+                };
+                WaterSample { height: heights[i], normal: results[i].1, velocity: Vec3::new(0.0, vy, 0.0) }
+            });
+            self.last_heights = Some((heights, t));
+            self.water = Some(samples);
+        }
+        if let Some(s) = &self.water {
+            self.buoy_body.step(s, dt.min(0.25));
+        }
+        self.buoy.set_transform(self.buoy_body.transform());
+        self.query.request(&self.buoy_body.sample_points());
     }
 
     fn ensure_targets(&mut self, scale: f32) {
@@ -296,6 +345,7 @@ impl Renderer {
         self.ensure_spectrum(&params);
         self.camera.yaw_deg = params.sun_azimuth_deg;
         let cam = self.camera.pose();
+        self.update_buoy(&cam, t, dt);
         let (w, h) = self.gbuffer.extent;
         let vp = cam.view_proj(w as f32 / h as f32);
         let prev = self.prev_view_proj.unwrap_or(vp);
@@ -320,9 +370,11 @@ impl Renderer {
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.timer.start(&mut enc);
         self.ocean.update(&mut enc, t % REPEAT_PERIOD_S, params.choppiness, foam_params(&params), dt);
+        self.query.record(&mut enc);
         self.timer.mark(&mut enc, "ocean sim");
         self.sky.update(&mut enc, sun);
         self.timer.mark(&mut enc, "sky");
+        self.buoy.record_opaque(&mut enc, &self.gbuffer, &self.ocean_bind_groups[self.ocean.foam_index()]);
         {
             let g = &self.gbuffer;
             let color = |view| {
@@ -347,6 +399,7 @@ impl Renderer {
             pass.set_bind_group(0, &self.ocean_bind_groups[self.ocean.foam_index()], &[]);
             pass.set_index_buffer(self.mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.mesh.index_count, 0, 0..LEVELS);
+            self.buoy.draw_gbuffer(&mut pass, &self.ocean_bind_groups[self.ocean.foam_index()]);
         }
         self.timer.mark(&mut enc, "gbuffer");
         self.reflections.record(&mut enc, params.reflection_mode);
@@ -361,5 +414,6 @@ impl Renderer {
         self.timer.finish(&mut enc);
         self.queue.submit([enc.finish()]);
         self.timer.after_submit();
+        self.query.after_submit();
     }
 }

@@ -58,6 +58,8 @@ impl ShadePass {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                tex_entry(6, wgpu::TextureSampleType::Depth),
+                tex_entry(7, float),
             ],
         });
         let pl = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -121,6 +123,8 @@ impl ShadePass {
                     wgpu::BindGroupEntry { binding: 3, resource: T(&g.material) },
                     wgpu::BindGroupEntry { binding: 4, resource: T(&refl[i]) },
                     wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(sampler) },
+                    wgpu::BindGroupEntry { binding: 6, resource: T(&g.opaque_depth) },
+                    wgpu::BindGroupEntry { binding: 7, resource: T(&g.opaque_albedo) },
                 ],
             })
         })

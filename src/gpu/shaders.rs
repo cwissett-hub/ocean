@@ -19,6 +19,8 @@ pub const SHADERS: &[&str] = &[
     "reflect_resolve",
     "post",
     "rq_smoke",
+    "wave_query",
+    "buoy_gbuffer",
 ];
 
 const EMBEDDED: &[(&str, &str)] = &[
@@ -33,6 +35,9 @@ const EMBEDDED: &[(&str, &str)] = &[
     ("reflect_resolve", include_str!("../../shaders/reflect_resolve.wgsl")),
     ("post", include_str!("../../shaders/post.wgsl")),
     ("rq_smoke", include_str!("../../shaders/rq_smoke.wgsl")),
+    ("wave_query", include_str!("../../shaders/wave_query.wgsl")),
+    ("buoy_gbuffer", include_str!("../../shaders/buoy_gbuffer.wgsl")),
+    ("buoy_common", include_str!("../../shaders/buoy_common.wgsl")),
     ("frame_common", include_str!("../../shaders/frame_common.wgsl")),
     ("sky_common", include_str!("../../shaders/sky_common.wgsl")),
     ("sky_sample", include_str!("../../shaders/sky_sample.wgsl")),

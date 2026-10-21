@@ -1,6 +1,7 @@
 // #include frame_common.wgsl
 // #include sky_common.wgsl
 // #include sky_sample.wgsl
+// #include buoy_common.wgsl
 // Full-screen composite into the HDR target: sky where nothing was drawn, physically based
 // water elsewhere. Needs frame_common.wgsl, sky_common.wgsl, sky_sample.wgsl.
 
@@ -9,6 +10,8 @@
 @group(0) @binding(3) var material_tex: texture_2d<f32>;
 @group(0) @binding(4) var reflection_tex: texture_2d<f32>;
 @group(0) @binding(5) var lin: sampler;
+@group(0) @binding(6) var opaque_depth: texture_depth_2d;
+@group(0) @binding(7) var opaque_albedo: texture_2d<f32>;
 
 const WATER_F0: f32 = 0.02;
 // Seawater absorption and scattering, 1/m (pure-water absorption + a little particulate).
@@ -51,7 +54,7 @@ fn aerial(col: vec3<f32>, view: vec3<f32>, dist_m: f32) -> vec3<f32> {
     return col * t + horizon * (vec3<f32>(1.0) - t);
 }
 
-fn shade_water(p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam: f32, traced: vec4<f32>) -> vec3<f32> {
+fn shade_water(px: vec2<f32>, p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam: f32, traced: vec4<f32>) -> vec3<f32> {
     let to_eye = frame.cam_pos.xyz - p;
     let dist = length(to_eye);
     let v = to_eye / dist;
@@ -84,7 +87,21 @@ fn shade_water(p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam: f32, traced: 
     // Light scattered back up out of the deep water column (single scattering, deep water).
     let albedo = WATER_SCATTER / (WATER_ABSORB + WATER_SCATTER);
     let e_in = e_sun * max(sun.y, 0.0) * (1.0 - fresnel(max(sun.y, 0.0))) + sky_irradiance() * 0.94;
-    let body = (1.0 - f) * e_in * albedo / (4.0 * PI) * 1.3;
+    var body = (1.0 - f) * e_in * albedo / (4.0 * PI) * 1.3;
+
+    // Refraction: anything opaque under this bit of surface (the buoy's hull) shows through,
+    // dimmed and tinted by the water it is seen through. Screen-space offset by the normal.
+    let rp = clamp(px + n.xz * (40.0 / max(dist, 1.0)) * frame.resolution.x / 1280.0, vec2<f32>(0.0), frame.resolution.xy - 1.0);
+    let od = textureLoad(opaque_depth, vec2<i32>(rp), 0);
+    if (od > 0.0) {
+        let q = world_from_depth(rp, od);
+        let path = length(q - p);
+        if (q.y < p.y && length(q - frame.cam_pos.xyz) > dist) {
+            let t = exp(-(WATER_ABSORB + WATER_SCATTER) * path);
+            let lit = textureLoad(opaque_albedo, vec2<i32>(rp), 0).rgb / PI * e_in * t;
+            body = (1.0 - f) * lit + body * (vec3<f32>(1.0) - t);
+        }
+    }
 
     // Sunlight through thin wave crests toward the eye: the green-gold glow when looking
     // into a low sun.
@@ -115,5 +132,35 @@ fn fs_shade(in: VsOut) -> @location(0) vec4<f32> {
     let nv = textureLoad(normal_tex, px, 0);
     let foam = textureLoad(material_tex, px, 0).r;
     let traced = textureSampleLevel(reflection_tex, lin, in.pos.xy * frame.resolution.zw, 0.0);
-    return vec4<f32>(shade_water(p, nv.xyz, nv.w, foam, traced), 1.0);
+    let mat = textureLoad(material_tex, px, 0);
+    if (mat.g > 0.5) {
+        return vec4<f32>(shade_buoy(p, nv.xyz, mat.b * 4.0 - 0.5), 1.0);
+    }
+    return vec4<f32>(shade_water(in.pos.xy, p, nv.xyz, nv.w, foam, traced), 1.0);
+}
+
+// Painted steel: diffuse sun and sky, a soft GGX highlight and the sky in its sheen.
+fn shade_buoy(p: vec3<f32>, n: vec3<f32>, local_y: f32) -> vec3<f32> {
+    let to_eye = frame.cam_pos.xyz - p;
+    let dist = length(to_eye);
+    let v = to_eye / dist;
+    let sun = frame.sun_dir.xyz;
+    let e_sun = sun_transmittance();
+    let albedo = buoy_albedo(local_y);
+    let n_l = max(dot(n, sun), 0.0);
+    let n_v = max(dot(n, v), 1e-4);
+    let ambient = sky_irradiance() * (0.6 + 0.4 * n.y) + sky_radiance(normalize(vec3<f32>(-sun.x, 0.1, -sun.z))) * PI * 0.15 * max(-n.y, 0.0);
+    var col = albedo / PI * (e_sun * n_l + ambient);
+    let alpha2 = 2.0 * BUOY_PAINT_VARIANCE;
+    let h = normalize(v + sun);
+    if (n_l > 0.0) {
+        let g = smith_g1(n_v, alpha2) * smith_g1(n_l, alpha2);
+        let f0 = 0.04 + (1.0 - 0.04) * pow(1.0 - clamp(dot(v, h), 0.0, 1.0), 5.0);
+        col += e_sun * ggx(max(dot(n, h), 0.0), alpha2) * g * f0 / (4.0 * n_v);
+    }
+    let f = 0.04 + 0.96 * pow(1.0 - n_v, 5.0);
+    col += sky_radiance(reflect(-v, n)) * f * 0.5;
+    // The lantern, bright enough to bloom at dusk.
+    col += buoy_emission(local_y) * 0.4 * (1.0 - smoothstep(-6.0, 20.0, degrees(asin(sun.y))));
+    return aerial(col, -v, dist);
 }

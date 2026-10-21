@@ -20,6 +20,9 @@ pub struct GBuffer {
     /// Last frame's HDR colour: what screen-space reflections see.
     pub prev_hdr: wgpu::TextureView,
     pub prev_hdr_tex: wgpu::Texture,
+    /// Opaque objects only (the buoy), for water refraction: depth and albedo.
+    pub opaque_depth: wgpu::TextureView,
+    pub opaque_albedo: wgpu::TextureView,
 }
 
 fn target(d: &wgpu::Device, label: &str, extent: (u32, u32), format: wgpu::TextureFormat) -> wgpu::TextureView {
@@ -59,6 +62,8 @@ impl GBuffer {
             hdr_tex,
             prev_hdr: prev_hdr_tex.create_view(&Default::default()),
             prev_hdr_tex,
+            opaque_depth: target(d, "opaque depth", extent, DEPTH_FORMAT),
+            opaque_albedo: target(d, "opaque albedo", extent, MATERIAL_FORMAT),
         }
     }
 }

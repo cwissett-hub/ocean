@@ -23,6 +23,8 @@ pub const SHADERS: &[&str] = &[
     "buoy_gbuffer",
     "rt_patch",
     "reflect_rt",
+    "particles_sim",
+    "particles_draw",
 ];
 
 const EMBEDDED: &[(&str, &str)] = &[
@@ -42,6 +44,8 @@ const EMBEDDED: &[(&str, &str)] = &[
     ("rt_patch", include_str!("../../shaders/rt_patch.wgsl")),
     ("surfaces", include_str!("../../shaders/surfaces.wgsl")),
     ("reflect_rt", include_str!("../../shaders/reflect_rt.wgsl")),
+    ("particles_sim", include_str!("../../shaders/particles_sim.wgsl")),
+    ("particles_draw", include_str!("../../shaders/particles_draw.wgsl")),
     ("buoy_common", include_str!("../../shaders/buoy_common.wgsl")),
     ("frame_common", include_str!("../../shaders/frame_common.wgsl")),
     ("sky_common", include_str!("../../shaders/sky_common.wgsl")),

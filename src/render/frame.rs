@@ -10,6 +10,7 @@ use crate::params::OceanParams;
 use crate::render::gbuffer::{DEPTH_FORMAT, GBuffer, MATERIAL_FORMAT, MOTION_FORMAT, NORMAL_FORMAT};
 use crate::render::ocean_mesh::{BASE_CELL_M, GRID, LEVELS, OceanMesh};
 use crate::render::post::{Post, exposure_ev, exposure_multiplier};
+use crate::render::particles::{ParticleInputs, ParticleSystem};
 use crate::render::reflect::ReflectionPass;
 use crate::render::rt_scene::{RtPatchConfig, RtScene, patch_origin};
 use crate::gpu::shaders::ShaderLibrary;
@@ -97,6 +98,7 @@ pub struct Renderer {
     timer: GpuTimer,
     /// Ray-tracing scene; None when the device has no ray query.
     rt: Option<RtScene>,
+    particles: ParticleSystem,
     buoy: BuoyPass,
     buoy_body: BuoyBody,
     query: WaveQuery,
@@ -241,6 +243,7 @@ impl Renderer {
         });
         let gbuffer = GBuffer::new(d, internal_extent(surface_extent, params.render_scale));
         let reflections = ReflectionPass::new(d, lib, &ctx.queue, &uniforms, &gbuffer);
+        let particles = ParticleSystem::new(d, &ctx.queue, lib, &uniforms, &ocean, &sky, &gbuffer);
         let shade = ShadePass::new(d, lib, &uniforms, &sky, &gbuffer, reflections.views());
         let post = Post::new(d, lib, format, &gbuffer);
         let buoy_mesh = build_buoy_mesh();
@@ -256,6 +259,7 @@ impl Renderer {
         });
         Renderer {
             rt,
+            particles,
             buoy,
             buoy_body: BuoyBody::at(Vec3::new(anchor.x, 0.0, anchor.y)),
             query,
@@ -317,6 +321,7 @@ impl Renderer {
             self.reflections.resize(&self.device, &self.uniforms, &self.gbuffer, self.rt.as_ref());
             self.shade.rebind(&self.device, &self.uniforms, &self.gbuffer, self.reflections.views());
             self.post.resize(&self.device, &self.gbuffer);
+            self.particles.resize(&self.device, &self.uniforms, &self.gbuffer);
             self.prev_view_proj = None;
         }
     }
@@ -389,6 +394,19 @@ impl Renderer {
             rt.record(&mut enc, origin, self.buoy_body.transform(), (vb, ib));
         }
         self.timer.mark(&mut enc, "rt build");
+        self.particles.record(
+            &mut enc,
+            &ParticleInputs {
+                dt,
+                wind_speed: params.wind_speed,
+                wind_dir_deg: params.wind_dir_deg,
+                amount: params.particle_amount,
+                foam_threshold: foam_params(&params).threshold,
+                cam_pos: cam.position,
+                cam_forward: cam.forward,
+            },
+        );
+        self.timer.mark(&mut enc, "particle sim");
         self.sky.update(&mut enc, sun);
         self.timer.mark(&mut enc, "sky");
         self.buoy.record_opaque(&mut enc, &self.gbuffer, &self.ocean_bind_groups[self.ocean.foam_index()]);
@@ -422,6 +440,7 @@ impl Renderer {
         self.reflections.record(&mut enc, params.reflection_mode, &self.sky);
         self.timer.mark(&mut enc, "reflections");
         self.shade.record(&mut enc, &self.gbuffer, &self.sky, self.reflections.index());
+        self.particles.draw(&mut enc, &self.gbuffer.hdr, &self.sky);
         self.gbuffer.record_history(&mut enc);
         self.timer.mark(&mut enc, "shade");
         self.post.record(&mut enc, &self.queue, view, exposure);

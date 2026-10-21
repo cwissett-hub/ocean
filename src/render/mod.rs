@@ -1,6 +1,7 @@
 pub mod frame;
 pub mod gbuffer;
 pub mod ocean_mesh;
+pub mod particles;
 pub mod post;
 pub mod reflect;
 pub mod rt_scene;

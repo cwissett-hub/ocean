@@ -42,6 +42,8 @@ pub struct GpuOcean {
     fft_h: (wgpu::ComputePipeline, wgpu::BindGroup),
     fft_v: (wgpu::ComputePipeline, wgpu::BindGroup),
     assemble: (wgpu::ComputePipeline, wgpu::BindGroup),
+    /// Spray deposits (512² u32, 1/256 units per 2 m cell) written by particles, read by foam.
+    deposits: wgpu::Buffer,
     /// Foam ping-pong: pass i reads foam_views[i] and writes foam_views[1 - i].
     foam_passes: [(wgpu::ComputePipeline, wgpu::BindGroup); 2],
     foam_views: [wgpu::TextureView; 2],
@@ -166,6 +168,12 @@ impl GpuOcean {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let deposits = d.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("spray deposits"),
+            size: 512 * 512 * 4,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
         let foam_src = &src("foam");
         let foam_pass = |i: usize| {
             compute(
@@ -180,11 +188,13 @@ impl GpuOcean {
                     T(&foam_views[i]),
                     T(&foam_views[1 - i]),
                     params.as_entire_binding(),
+                    deposits.as_entire_binding(),
                 ],
             )
         };
         let foam_passes = [foam_pass(0), foam_pass(1)];
         let ocean = GpuOcean {
+            deposits,
             foam_passes,
             foam_views,
             foam_current: 0,
@@ -265,6 +275,10 @@ impl GpuOcean {
 
     pub fn foam_index(&self) -> usize {
         self.foam_current
+    }
+
+    pub fn deposits(&self) -> &wgpu::Buffer {
+        &self.deposits
     }
 
     /// Blocking readback of the latest foam amounts (FOAM_RES², row-major). Tests only.

@@ -61,7 +61,17 @@ pub fn select_adapter(c: &[AdapterCandidate]) -> Option<AdapterChoice> {
     Some(AdapterChoice {
         index,
         rt_available: best.ray_query,
-        reason: format!("{} ({kind} GPU, {:?}): {rt}", best.name, best.backend),
+        reason: if best.device_type == wgpu::DeviceType::DiscreteGpu {
+            format!("{} ({kind} GPU, {:?}): {rt}", best.name, best.backend)
+        } else {
+            let seen: Vec<String> = c.iter().map(|a| format!("{} ({:?})", a.name, a.backend)).collect();
+            format!(
+                "{} ({kind} GPU, {:?}): {rt}. No discrete GPU found; adapters seen: {}",
+                best.name,
+                best.backend,
+                seen.join(", ")
+            )
+        },
     })
 }
 
@@ -97,7 +107,11 @@ impl GpuContext {
             Some(w) => Some(instance.create_surface(w).context("create window surface")?),
             None => None,
         };
-        let mut adapters = instance.enumerate_adapters(wgpu::Backends::VULKAN).await;
+        // Both backends together: a discrete GPU on DX12 beats an integrated one on Vulkan
+        // (ranking prefers Vulkan with ray query only within the same device type).
+        let mut adapters = instance
+            .enumerate_adapters(wgpu::Backends::VULKAN | wgpu::Backends::DX12)
+            .await;
         if adapters.is_empty() {
             adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
         }
@@ -211,6 +225,7 @@ mod tests {
         assert_eq!(ch.index, 0);
         assert!(ch.rt_available);
         assert!(ch.reason.contains("integrated"), "{}", ch.reason);
+        assert!(ch.reason.contains("No discrete GPU"), "{}", ch.reason);
     }
 
     #[test]

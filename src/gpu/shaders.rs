@@ -55,6 +55,8 @@ const EMBEDDED: &[(&str, &str)] = &[
 pub struct ShaderLibrary {
     dir: Option<PathBuf>,
     files: HashMap<String, String>,
+    /// Why the disk copies were rejected at load, if they were.
+    load_errors: Vec<(String, String)>,
 }
 
 /// Checks a fully expanded WGSL source the way wgpu will (parse + validate).
@@ -109,15 +111,23 @@ impl ShaderLibrary {
         ShaderLibrary {
             dir: None,
             files: EMBEDDED.iter().map(|(n, s)| (n.to_string(), s.to_string())).collect(),
+            load_errors: Vec::new(),
         }
     }
 
-    /// Embedded copies overridden by whatever `dir` holds.
+    /// Embedded copies overridden by whatever `dir` holds — unless any of those fail
+    /// validation (a half-edited or stale shader), in which case the embedded set is used
+    /// and the errors are kept for the overlay. F5 can still pick up fixed files later.
     pub fn with_dir(dir: PathBuf) -> ShaderLibrary {
         let mut lib = ShaderLibrary::embedded();
-        lib.files.extend(lib.read_disk_from(&dir));
         lib.dir = Some(dir);
+        lib.load_errors = lib.reload_all();
         lib
+    }
+
+    /// Errors that made the disk shaders fall back to the embedded copies at load.
+    pub fn load_errors(&self) -> &[(String, String)] {
+        &self.load_errors
     }
 
     /// `shaders/` next to the exe, else in the working directory, else embedded only.
@@ -235,6 +245,23 @@ mod tests {
         let src = ShaderLibrary::embedded().source("reflect_rt").unwrap();
         assert!(src.trim_start().starts_with("enable wgpu_ray_query;"), "{}", &src[..80]);
         assert_eq!(src.matches("enable wgpu_ray_query;").count(), 1);
+    }
+
+    #[test]
+    fn broken_disk_shader_at_load_falls_back_to_embedded() {
+        let d = temp_dir("broken-at-load");
+        std::fs::write(d.join("fft.wgsl"), "fn main( { not wgsl").unwrap();
+        let lib = ShaderLibrary::with_dir(d.clone());
+        assert_eq!(
+            lib.source("fft").unwrap(),
+            ShaderLibrary::embedded().source("fft").unwrap()
+        );
+        assert!(
+            lib.load_errors().iter().any(|(n, _)| n == "fft"),
+            "{:?}",
+            lib.load_errors()
+        );
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

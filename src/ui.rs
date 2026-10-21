@@ -101,3 +101,15 @@ pub fn overlay(ctx: &egui::Context, info: &OverlayInfo) {
             });
         });
 }
+
+/// Shader errors on their own, for when the overlay is hidden.
+pub fn shader_errors(ctx: &egui::Context, errors: &[String]) {
+    egui::Window::new("Shader errors")
+        .anchor(egui::Align2::RIGHT_TOP, [-10.0, 10.0])
+        .show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            for e in errors {
+                ui.colored_label(egui::Color32::from_rgb(255, 120, 100), e);
+            }
+        });
+}

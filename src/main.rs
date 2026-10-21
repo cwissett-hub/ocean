@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ocean::bench;
+use ocean::clock::sim_time;
 use ocean::gpu::adapter::GpuContext;
 use ocean::gpu::extent::render_extent;
 use ocean::gpu::shaders::ShaderLibrary;
@@ -108,8 +109,21 @@ impl Gfx {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&ctx.device, &config);
-        let shaders = ShaderLibrary::discover();
-        let renderer = Renderer::new(&ctx, &shaders, format, (config.width, config.height), params);
+        let mut shaders = ShaderLibrary::discover();
+        let mut shader_errors: Vec<String> = shaders
+            .load_errors()
+            .iter()
+            .map(|(n, e)| format!("{n}.wgsl (using built-in copy): {e}"))
+            .collect();
+        let extent = (config.width, config.height);
+        let scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut renderer = Renderer::new(&ctx, &shaders, format, extent, params);
+        if let Some(e) = pollster::block_on(scope.pop()) {
+            // Disk shaders passed naga but not pipeline creation: fall back to the built-in set.
+            shader_errors.push(format!("pipeline (using built-in shaders): {e}"));
+            shaders = ShaderLibrary::embedded();
+            renderer = Renderer::new(&ctx, &shaders, format, extent, params);
+        }
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(),
@@ -127,7 +141,7 @@ impl Gfx {
             config,
             renderer,
             shaders,
-            shader_errors: Vec::new(),
+            shader_errors,
             egui_ctx,
             egui_state,
             egui_renderer,
@@ -205,6 +219,8 @@ impl Gfx {
             }
             if params.show_overlay {
                 ui::overlay(ctx, &info);
+            } else if !info.shader_errors.is_empty() {
+                ui::shader_errors(ctx, &info.shader_errors);
             }
         });
         self.egui_state
@@ -269,7 +285,12 @@ impl ApplicationHandler for App {
         let consumed = gfx.egui_state.on_window_event(&gfx.window, &event).consumed;
         match event {
             WindowEvent::CloseRequested => el.exit(),
-            WindowEvent::Resized(s) => gfx.resize(s.width, s.height),
+            WindowEvent::Resized(s) => {
+                gfx.resize(s.width, s.height);
+                // Restored from minimised: restart the frame loop.
+                gfx.window.request_redraw();
+            }
+            WindowEvent::Occluded(false) => gfx.window.request_redraw(),
             WindowEvent::KeyboardInput { event: k, .. }
                 if !consumed && k.state == ElementState::Pressed && !k.repeat =>
             {
@@ -282,10 +303,16 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                // Minimised: draw nothing and stop asking for frames until Resized/Occluded wakes us.
+                let size = gfx.window.inner_size();
+                if gfx.window.is_minimized() == Some(true) || size.width == 0 || size.height == 0 {
+                    return;
+                }
                 let now = Instant::now();
                 let dt = (now - self.last_frame).as_secs_f32();
                 self.last_frame = now;
-                let t = self.freeze_time.unwrap_or((now - self.start).as_secs_f32());
+                // f64 until reduced to one wave period: f32 seconds judder after hours.
+                let t = sim_time(self.freeze_time.map_or((now - self.start).as_secs_f64(), f64::from));
                 gfx.render(&mut self.params, self.show_panel, self.fps, t, dt);
                 self.frames += 1;
                 let secs = self.fps_since.elapsed().as_secs_f32();
@@ -361,7 +388,9 @@ fn parse_args() -> anyhow::Result<(OceanParams, Option<Bench>, bool, Option<f32>
 fn main() -> anyhow::Result<()> {
     let (params, bench, panel, freeze) = parse_args()?;
     let el = EventLoop::new()?;
-    el.set_control_flow(ControlFlow::Poll);
+    // Wait, not Poll: request_redraw keeps frames coming, and a minimised window (which
+    // renders nothing) then sleeps instead of spinning a core.
+    el.set_control_flow(ControlFlow::Wait);
     let mut app = App::new(params, bench);
     app.show_panel = panel;
     app.freeze_time = freeze;

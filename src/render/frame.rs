@@ -3,6 +3,7 @@
 
 use glam::{Mat4, Vec2, Vec3};
 
+use crate::clock::should_rebuild_spectrum;
 use crate::gpu::adapter::GpuContext;
 use crate::gpu::extent::render_extent;
 use crate::gpu::shaders::ShaderLibrary;
@@ -100,6 +101,7 @@ pub struct Renderer {
     prev_view_proj: Option<Mat4>,
     spectrum_key: SpectrumKey,
     stats: SpectrumStats,
+    since_spectrum: f32,
     timer: GpuTimer,
     /// Ray-tracing scene; None when the device has no ray query.
     rt: Option<RtScene>,
@@ -317,6 +319,7 @@ impl Renderer {
             prev_view_proj: None,
             spectrum_key: SpectrumKey::of(params),
             stats: SpectrumStats::of(&spectrum, params),
+            since_spectrum: 0.0,
             timer: GpuTimer::new(d, &ctx.queue),
         }
     }
@@ -367,9 +370,13 @@ impl Renderer {
         }
     }
 
-    fn ensure_spectrum(&mut self, params: &OceanParams) {
+    /// Rebuilds the spectrum after a sea-setting change, at most every
+    /// SPECTRUM_REBUILD_INTERVAL_S while a slider is being dragged.
+    fn ensure_spectrum(&mut self, params: &OceanParams, dt: f32) {
         let key = SpectrumKey::of(params);
-        if key != self.spectrum_key {
+        self.since_spectrum += dt.max(0.0);
+        if should_rebuild_spectrum(key != self.spectrum_key, self.since_spectrum) {
+            self.since_spectrum = 0.0;
             let s = build_spectrum(params, SEED);
             self.ocean.set_spectrum(&self.queue, &s);
             self.stats = SpectrumStats::of(&s, params);
@@ -399,7 +406,7 @@ impl Renderer {
         self.timer.poll(&self.device);
         let params = params.clamped();
         self.ensure_targets(params.render_scale);
-        self.ensure_spectrum(&params);
+        self.ensure_spectrum(&params, dt);
         self.camera.yaw_deg = params.sun_azimuth_deg;
         let cam = self.camera.pose();
         self.update_buoy(&cam, t, dt);

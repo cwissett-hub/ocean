@@ -16,9 +16,23 @@ pub struct GBuffer {
     pub motion: wgpu::TextureView,
     /// Linear HDR scene colour before exposure.
     pub hdr: wgpu::TextureView,
+    pub hdr_tex: wgpu::Texture,
+    /// Last frame's HDR colour: what screen-space reflections see.
+    pub prev_hdr: wgpu::TextureView,
+    pub prev_hdr_tex: wgpu::Texture,
 }
 
-fn target(d: &wgpu::Device, label: &str, (w, h): (u32, u32), format: wgpu::TextureFormat) -> wgpu::TextureView {
+fn target(d: &wgpu::Device, label: &str, extent: (u32, u32), format: wgpu::TextureFormat) -> wgpu::TextureView {
+    texture(d, label, extent, format, wgpu::TextureUsages::empty()).create_view(&Default::default())
+}
+
+fn texture(
+    d: &wgpu::Device,
+    label: &str,
+    (w, h): (u32, u32),
+    format: wgpu::TextureFormat,
+    extra: wgpu::TextureUsages,
+) -> wgpu::Texture {
     d.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -26,21 +40,36 @@ fn target(d: &wgpu::Device, label: &str, (w, h): (u32, u32), format: wgpu::Textu
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | extra,
         view_formats: &[],
     })
-    .create_view(&Default::default())
 }
 
 impl GBuffer {
     pub fn new(d: &wgpu::Device, extent: (u32, u32)) -> GBuffer {
+        let hdr_tex = texture(d, "hdr", extent, HDR_FORMAT, wgpu::TextureUsages::COPY_SRC);
+        let prev_hdr_tex = texture(d, "prev hdr", extent, HDR_FORMAT, wgpu::TextureUsages::COPY_DST);
         GBuffer {
             extent,
             depth: target(d, "gbuffer depth", extent, DEPTH_FORMAT),
             normal: target(d, "gbuffer normal", extent, NORMAL_FORMAT),
             material: target(d, "gbuffer material", extent, MATERIAL_FORMAT),
             motion: target(d, "gbuffer motion", extent, MOTION_FORMAT),
-            hdr: target(d, "hdr", extent, HDR_FORMAT),
+            hdr: hdr_tex.create_view(&Default::default()),
+            hdr_tex,
+            prev_hdr: prev_hdr_tex.create_view(&Default::default()),
+            prev_hdr_tex,
         }
+    }
+}
+
+impl GBuffer {
+    /// Keeps this frame's HDR for next frame's screen-space reflections.
+    pub fn record_history(&self, enc: &mut wgpu::CommandEncoder) {
+        enc.copy_texture_to_texture(
+            self.hdr_tex.as_image_copy(),
+            self.prev_hdr_tex.as_image_copy(),
+            wgpu::Extent3d { width: self.extent.0, height: self.extent.1, depth_or_array_layers: 1 },
+        );
     }
 }

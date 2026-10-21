@@ -4,6 +4,8 @@
 @group(0) @binding(1) var depth_tex: texture_depth_2d;
 @group(0) @binding(2) var normal_tex: texture_2d<f32>;
 @group(0) @binding(3) var material_tex: texture_2d<f32>;
+@group(0) @binding(4) var reflection_tex: texture_2d<f32>;
+@group(0) @binding(5) var lin: sampler;
 
 const WATER_F0: f32 = 0.02;
 // Seawater absorption and scattering, 1/m (pure-water absorption + a little particulate).
@@ -46,7 +48,7 @@ fn aerial(col: vec3<f32>, view: vec3<f32>, dist_m: f32) -> vec3<f32> {
     return col * t + horizon * (vec3<f32>(1.0) - t);
 }
 
-fn shade_water(p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam: f32) -> vec3<f32> {
+fn shade_water(p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam: f32, traced: vec4<f32>) -> vec3<f32> {
     let to_eye = frame.cam_pos.xyz - p;
     let dist = length(to_eye);
     let v = to_eye / dist;
@@ -59,12 +61,12 @@ fn shade_water(p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam: f32) -> vec3<
     let sun = frame.sun_dir.xyz;
     let e_sun = sun_transmittance();
 
-    // Reflected sky. Rays reflected below the horizon would hit other waves (ray tracing
-    // handles those later); here they see the horizon.
+    // Reflection: whatever the reflection pass found (other waves, objects), else the sky.
+    // Rays reflected below the horizon that found nothing see the horizon.
     let r0 = reflect(-v, n);
     let r = normalize(vec3<f32>(r0.x, max(r0.y, 0.0), r0.z));
     let f = fresnel(n_v);
-    let reflected = sky_radiance(r) * f;
+    let reflected = mix(sky_radiance(r), traced.rgb, traced.a) * f;
 
     // Sun specular: microfacet GGX over the unresolved slopes.
     let alpha2 = clamp(2.0 * variance, 1e-4, 1.0);
@@ -109,5 +111,6 @@ fn fs_shade(in: VsOut) -> @location(0) vec4<f32> {
     let p = world_from_depth(in.pos.xy, depth);
     let nv = textureLoad(normal_tex, px, 0);
     let foam = textureLoad(material_tex, px, 0).r;
-    return vec4<f32>(shade_water(p, nv.xyz, nv.w, foam), 1.0);
+    let traced = textureSampleLevel(reflection_tex, lin, in.pos.xy * frame.resolution.zw, 0.0);
+    return vec4<f32>(shade_water(p, nv.xyz, nv.w, foam, traced), 1.0);
 }

@@ -9,6 +9,7 @@ use crate::params::OceanParams;
 use crate::render::gbuffer::{DEPTH_FORMAT, GBuffer, MATERIAL_FORMAT, MOTION_FORMAT, NORMAL_FORMAT};
 use crate::render::ocean_mesh::{BASE_CELL_M, GRID, LEVELS, OceanMesh};
 use crate::render::post::{Post, exposure_ev, exposure_multiplier};
+use crate::render::reflect::ReflectionPass;
 use crate::render::shade::{FRAME_COMMON, ShadePass};
 use crate::render::sky::{SkyLuts, sun_direction};
 use crate::scene::camera::{CameraRig, FixedCamera};
@@ -79,6 +80,7 @@ pub struct Renderer {
     ocean_bind_groups: [wgpu::BindGroup; 2],
     gbuffer_pipeline: wgpu::RenderPipeline,
     gbuffer: GBuffer,
+    reflections: ReflectionPass,
     shade: ShadePass,
     post: Post,
     surface_extent: (u32, u32),
@@ -210,7 +212,8 @@ impl Renderer {
             cache: None,
         });
         let gbuffer = GBuffer::new(d, internal_extent(surface_extent, params.render_scale));
-        let shade = ShadePass::new(d, &uniforms, &sky, &gbuffer);
+        let reflections = ReflectionPass::new(d, &ctx.queue, &uniforms, &gbuffer);
+        let shade = ShadePass::new(d, &uniforms, &sky, &gbuffer, reflections.views());
         let post = Post::new(d, format, &gbuffer);
         Renderer {
             device: d.clone(),
@@ -222,6 +225,7 @@ impl Renderer {
             ocean_bind_groups,
             gbuffer_pipeline,
             gbuffer,
+            reflections,
             shade,
             post,
             surface_extent,
@@ -240,7 +244,8 @@ impl Renderer {
         let want = internal_extent(self.surface_extent, scale);
         if want != self.gbuffer.extent {
             self.gbuffer = GBuffer::new(&self.device, want);
-            self.shade.rebind(&self.device, &self.uniforms, &self.gbuffer);
+            self.reflections.resize(&self.device, &self.uniforms, &self.gbuffer);
+            self.shade.rebind(&self.device, &self.uniforms, &self.gbuffer, self.reflections.views());
             self.post.resize(&self.device, &self.gbuffer);
             self.prev_view_proj = None;
         }
@@ -312,7 +317,9 @@ impl Renderer {
             pass.set_index_buffer(self.mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.mesh.index_count, 0, 0..LEVELS);
         }
-        self.shade.record(&mut enc, &self.gbuffer, &self.sky);
+        self.reflections.record(&mut enc, params.reflection_mode);
+        self.shade.record(&mut enc, &self.gbuffer, &self.sky, self.reflections.index());
+        self.gbuffer.record_history(&mut enc);
         self.post.record(&mut enc, &self.queue, view, exposure);
         self.queue.submit([enc.finish()]);
     }

@@ -8,7 +8,9 @@ pub const FRAME_COMMON: &str = include_str!("../../shaders/frame_common.wgsl");
 pub struct ShadePass {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
-    bind_group: wgpu::BindGroup,
+    sampler: wgpu::Sampler,
+    /// One per reflection history side (see ReflectionPass::index).
+    bind_groups: [wgpu::BindGroup; 2],
 }
 
 fn tex_entry(binding: u32, sample_type: wgpu::TextureSampleType) -> wgpu::BindGroupLayoutEntry {
@@ -25,7 +27,7 @@ fn tex_entry(binding: u32, sample_type: wgpu::TextureSampleType) -> wgpu::BindGr
 }
 
 impl ShadePass {
-    pub fn new(d: &wgpu::Device, frame: &wgpu::Buffer, sky: &SkyLuts, g: &GBuffer) -> ShadePass {
+    pub fn new(d: &wgpu::Device, frame: &wgpu::Buffer, sky: &SkyLuts, g: &GBuffer, refl: &[wgpu::TextureView; 2]) -> ShadePass {
         let float = wgpu::TextureSampleType::Float { filterable: false };
         let layout = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shade"),
@@ -43,6 +45,13 @@ impl ShadePass {
                 tex_entry(1, wgpu::TextureSampleType::Depth),
                 tex_entry(2, float),
                 tex_entry(3, float),
+                tex_entry(4, wgpu::TextureSampleType::Float { filterable: true }),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let pl = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -76,30 +85,47 @@ impl ShadePass {
             multiview_mask: None,
             cache: None,
         });
-        let bind_group = Self::bind(d, &layout, frame, g);
-        ShadePass { pipeline, layout, bind_group }
+        let sampler = d.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("shade linear"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let bind_groups = Self::bind(d, &layout, frame, g, refl, &sampler);
+        ShadePass { pipeline, layout, sampler, bind_groups }
     }
 
-    fn bind(d: &wgpu::Device, layout: &wgpu::BindGroupLayout, frame: &wgpu::Buffer, g: &GBuffer) -> wgpu::BindGroup {
+    fn bind(
+        d: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        frame: &wgpu::Buffer,
+        g: &GBuffer,
+        refl: &[wgpu::TextureView; 2],
+        sampler: &wgpu::Sampler,
+    ) -> [wgpu::BindGroup; 2] {
         use wgpu::BindingResource::TextureView as T;
-        d.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("shade"),
-            layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: frame.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: T(&g.depth) },
-                wgpu::BindGroupEntry { binding: 2, resource: T(&g.normal) },
-                wgpu::BindGroupEntry { binding: 3, resource: T(&g.material) },
-            ],
+        std::array::from_fn(|i| {
+            d.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("shade"),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: frame.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: T(&g.depth) },
+                    wgpu::BindGroupEntry { binding: 2, resource: T(&g.normal) },
+                    wgpu::BindGroupEntry { binding: 3, resource: T(&g.material) },
+                    wgpu::BindGroupEntry { binding: 4, resource: T(&refl[i]) },
+                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(sampler) },
+                ],
+            })
         })
     }
 
     /// Call after the G-buffer is recreated.
-    pub fn rebind(&mut self, d: &wgpu::Device, frame: &wgpu::Buffer, g: &GBuffer) {
-        self.bind_group = Self::bind(d, &self.layout, frame, g);
+    pub fn rebind(&mut self, d: &wgpu::Device, frame: &wgpu::Buffer, g: &GBuffer, refl: &[wgpu::TextureView; 2]) {
+        self.bind_groups = Self::bind(d, &self.layout, frame, g, refl, &self.sampler);
     }
 
-    pub fn record(&self, enc: &mut wgpu::CommandEncoder, g: &GBuffer, sky: &SkyLuts) {
+    pub fn record(&self, enc: &mut wgpu::CommandEncoder, g: &GBuffer, sky: &SkyLuts, refl_index: usize) {
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("shade"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -111,7 +137,7 @@ impl ShadePass {
             ..Default::default()
         });
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_bind_group(0, &self.bind_groups[refl_index], &[]);
         pass.set_bind_group(1, sky.bind_group(), &[]);
         pass.draw(0..3, 0..1);
     }

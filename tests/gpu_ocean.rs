@@ -15,7 +15,7 @@ fn gpu_matches_cpu_reference() {
     let mut gpu = GpuOcean::new(&ctx, &spectrum);
     let t = 3.7;
     let mut enc = ctx.device.create_command_encoder(&Default::default());
-    gpu.update(&mut enc, t, p.choppiness);
+    gpu.update(&mut enc, t, p.choppiness, ocean::waves::foam::foam_params(&p), 0.0);
     ctx.queue.submit([enc.finish()]);
 
     for c in 0..4 {
@@ -37,4 +37,25 @@ fn gpu_matches_cpu_reference() {
         }
         assert!(worst < 2e-3, "cascade {c}: max abs diff {worst} (max height {max_h})");
     }
+}
+
+#[test]
+fn foam_accumulates_in_strong_wind_and_not_in_calm() {
+    let ctx = GpuContext::new_headless().expect("gpu");
+    let frac = |wind: f32| {
+        let p = OceanParams { wind_speed: wind, ..Default::default() };
+        let mut gpu = GpuOcean::new(&ctx, &build_spectrum(&p, 42));
+        for i in 0..120 {
+            let mut enc = ctx.device.create_command_encoder(&Default::default());
+            gpu.update(&mut enc, i as f32 / 60.0, p.choppiness, ocean::waves::foam::foam_params(&p), 1.0 / 60.0);
+            ctx.queue.submit([enc.finish()]);
+        }
+        let foam = gpu.read_foam(&ctx);
+        foam.iter().filter(|&&f| f > 0.1).count() as f32 / foam.len() as f32
+    };
+    let (calm, rough) = (frac(5.0), frac(15.0));
+    eprintln!("foam coverage: calm {calm} rough {rough}");
+    assert!(rough > 0.005, "rough sea has too little foam: {rough}");
+    assert!(calm < 0.01, "calm sea has too much foam: {calm}");
+    assert!(rough > 5.0 * calm);
 }

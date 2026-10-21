@@ -2,6 +2,7 @@
 //! displacement and derivative textures that every later pass samples.
 
 use crate::gpu::adapter::GpuContext;
+use crate::waves::foam::FoamParams;
 use crate::waves::spectrum::{CASCADE_SIZES_M, N, SpectrumSet};
 
 pub const CASCADES: u32 = 4;
@@ -12,9 +13,18 @@ const WG: u32 = 16;
 struct Params {
     time: f32,
     choppiness: f32,
+    dt: f32,
+    threshold: f32,
+    inject: f32,
+    decay_per_s: f32,
     _pad: [f32; 2],
     sizes: [f32; 4],
 }
+
+/// Foam texture: cascade 0's period at 0.5 m per texel.
+pub const FOAM_RES: u32 = 2048;
+/// Longest step foam integrates in one frame; a hitch must not flood the sea with foam.
+const MAX_FOAM_DT: f32 = 0.1;
 
 pub struct GpuOcean {
     queue: wgpu::Queue,
@@ -31,6 +41,11 @@ pub struct GpuOcean {
     fft_h: (wgpu::ComputePipeline, wgpu::BindGroup),
     fft_v: (wgpu::ComputePipeline, wgpu::BindGroup),
     assemble: (wgpu::ComputePipeline, wgpu::BindGroup),
+    /// Foam ping-pong: pass i reads foam_views[i] and writes foam_views[1 - i].
+    foam_passes: [(wgpu::ComputePipeline, wgpu::BindGroup); 2],
+    foam_views: [wgpu::TextureView; 2],
+    /// Index of the foam view holding the latest result.
+    foam_current: usize,
 }
 
 fn array_texture(d: &wgpu::Device, label: &str, format: wgpu::TextureFormat, usage: wgpu::TextureUsages) -> wgpu::Texture {
@@ -127,7 +142,50 @@ impl GpuOcean {
             &[],
             &[T(&v[0]), T(&v[1]), T(&dispv), T(&derv)],
         );
+        let foam_tex = |label| {
+            d.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width: FOAM_RES, height: FOAM_RES, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: F::Rgba16Float,
+                usage: U::TEXTURE_BINDING | U::STORAGE_BINDING | U::COPY_SRC,
+                view_formats: &[],
+            })
+            .create_view(&Default::default())
+        };
+        let foam_views = [foam_tex("foam a"), foam_tex("foam b")];
+        let sampler = d.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ocean repeat"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let foam_src = include_str!("../../shaders/foam.wgsl");
+        let foam_pass = |i: usize| {
+            compute(
+                d,
+                "foam",
+                foam_src,
+                &[],
+                &[
+                    T(&dispv),
+                    T(&derv),
+                    wgpu::BindingResource::Sampler(&sampler),
+                    T(&foam_views[i]),
+                    T(&foam_views[1 - i]),
+                    params.as_entire_binding(),
+                ],
+            )
+        };
+        let foam_passes = [foam_pass(0), foam_pass(1)];
         let ocean = GpuOcean {
+            foam_passes,
+            foam_views,
+            foam_current: 0,
             queue: ctx.queue.clone(),
             h0,
             omega,
@@ -166,9 +224,18 @@ impl GpuOcean {
     }
 
     /// Records the simulation for time `t` (already reduced modulo the repeat period).
-    pub fn update(&mut self, enc: &mut wgpu::CommandEncoder, t: f32, choppiness: f32) {
+    pub fn update(&mut self, enc: &mut wgpu::CommandEncoder, t: f32, choppiness: f32, foam: FoamParams, dt: f32) {
         // Queue writes land before the next submit, so one update per submit.
-        let p = Params { time: t, choppiness, _pad: [0.0; 2], sizes: CASCADE_SIZES_M };
+        let p = Params {
+            time: t,
+            choppiness,
+            dt: dt.clamp(0.0, MAX_FOAM_DT),
+            threshold: foam.threshold,
+            inject: foam.inject,
+            decay_per_s: foam.decay_per_s,
+            _pad: [0.0; 2],
+            sizes: CASCADE_SIZES_M,
+        };
         self.queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&p));
         let n = N as u32;
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("ocean sim"), timestamp_writes: None });
@@ -182,24 +249,43 @@ impl GpuOcean {
             pass.set_bind_group(0, bg, &[]);
             pass.dispatch_workgroups(groups.0, groups.1, groups.2);
         }
+        let (pipeline, bg) = &self.foam_passes[self.foam_current];
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bg, &[]);
+        pass.dispatch_workgroups(FOAM_RES / WG, FOAM_RES / WG, 1);
+        self.foam_current = 1 - self.foam_current;
+    }
+
+    /// Both foam textures; `foam_index` says which holds the latest result.
+    pub fn foam_views(&self) -> &[wgpu::TextureView; 2] {
+        &self.foam_views
+    }
+
+    pub fn foam_index(&self) -> usize {
+        self.foam_current
+    }
+
+    /// Blocking readback of the latest foam amounts (FOAM_RES², row-major). Tests only.
+    pub fn read_foam(&self, ctx: &GpuContext) -> Vec<f32> {
+        read_rgba16(ctx, self.foam_views[self.foam_current].texture(), 0, FOAM_RES).into_iter().map(|t| t[0]).collect()
     }
 
     /// Blocking readback of one cascade's displacement (Dx, height, Dz, ∂Dx/∂z). Tests only.
     pub fn read_displacement(&self, ctx: &GpuContext, cascade: u32) -> Vec<[f32; 4]> {
-        read_rgba16(ctx, &self.displacement, cascade)
+        read_rgba16(ctx, &self.displacement, cascade, N as u32)
     }
 
     /// Blocking readback of one cascade's derivatives (∂h/∂x, ∂h/∂z, ∂Dx/∂x, ∂Dz/∂z). Tests only.
     pub fn read_derivatives(&self, ctx: &GpuContext, cascade: u32) -> Vec<[f32; 4]> {
-        read_rgba16(ctx, &self.derivatives, cascade)
+        read_rgba16(ctx, &self.derivatives, cascade, N as u32)
     }
 }
 
-fn read_rgba16(ctx: &GpuContext, tex: &wgpu::Texture, layer: u32) -> Vec<[f32; 4]> {
-    let row = N as u32 * 8;
+fn read_rgba16(ctx: &GpuContext, tex: &wgpu::Texture, layer: u32, size: u32) -> Vec<[f32; 4]> {
+    let row = size * 8;
     let buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("readback"),
-        size: (row * N as u32) as u64,
+        size: (row * size) as u64,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -215,7 +301,7 @@ fn read_rgba16(ctx: &GpuContext, tex: &wgpu::Texture, layer: u32) -> Vec<[f32; 4
             buffer: &buf,
             layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: None },
         },
-        wgpu::Extent3d { width: N as u32, height: N as u32, depth_or_array_layers: 1 },
+        wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
     );
     ctx.queue.submit([enc.finish()]);
     buf.slice(..).map_async(wgpu::MapMode::Read, |r| r.expect("map readback"));

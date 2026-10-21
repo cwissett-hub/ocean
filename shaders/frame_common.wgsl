@@ -11,7 +11,7 @@ struct Frame {
     lambda_min: vec4<f32>,  // shortest wavelength in each cascade's band, m
     grid: vec4<f32>,        // base cell m, levels, grid quads per side, 0
     slope_var: vec4<f32>,   // mean-square slope of each cascade
-    misc: vec4<f32>,        // unresolved slope variance, significant wave height m, exposure, 0
+    misc: vec4<f32>,        // unresolved slope variance, significant wave height m, exposure, wind direction rad
     resolution: vec4<f32>,  // w, h, 1/w, 1/h of the internal render targets
 };
 

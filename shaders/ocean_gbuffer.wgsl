@@ -4,6 +4,39 @@
 @group(0) @binding(1) var displacement: texture_2d_array<f32>;
 @group(0) @binding(2) var derivatives: texture_2d_array<f32>;
 @group(0) @binding(3) var samp: sampler;
+@group(0) @binding(4) var foam_tex: texture_2d<f32>;
+
+fn hash2(p: vec2<f32>) -> f32 {
+    let q = fract(p * vec2<f32>(0.1031, 0.1030));
+    let r = q + dot(q, q.yx + 33.33);
+    return fract((r.x + r.y) * r.x);
+}
+
+fn value_noise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = hash2(i);
+    let b = hash2(i + vec2<f32>(1.0, 0.0));
+    let c = hash2(i + vec2<f32>(0.0, 1.0));
+    let d = hash2(i + vec2<f32>(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// Thick fresh foam reads as solid white; as it decays it breaks into lace and streaks
+// stretched along the wind.
+fn foam_coverage(foam: f32, p: vec2<f32>, footprint: f32) -> f32 {
+    let a = frame.misc.w;
+    let along = vec2<f32>(sin(a), cos(a));
+    let q = vec2<f32>(dot(p, vec2<f32>(along.y, -along.x)), dot(p, along));
+    let streak = value_noise(q * vec2<f32>(0.8, 0.18));
+    let lace = value_noise(q * 4.1 + 17.0) * 0.6 + value_noise(q * 11.3 + 5.0) * 0.4;
+    // Far away the pattern is sub-pixel: use its average instead of aliasing.
+    let detail = mix(0.55 * streak + 0.45 * lace, 0.5, smoothstep(0.1, 0.6, footprint));
+    // The foam texture has 0.5 m texels and no mips: fade it before it aliases into specks.
+    let distance_fade = 1.0 - smoothstep(0.75, 3.0, footprint);
+    return clamp(foam * 2.5 - (1.0 - detail) * 1.2, 0.0, 1.0) * distance_fade;
+}
 
 fn level_center(cam_xz: vec2<f32>, cell: f32) -> vec2<f32> {
     let snap = 2.0 * cell;
@@ -102,7 +135,8 @@ fn fs_ocean(in: OceanOut) -> GBufferOut {
 
     var o: GBufferOut;
     o.normal_var = vec4<f32>(n, variance);
-    o.material = vec4<f32>(0.0);
+    let foam = textureSampleLevel(foam_tex, samp, in.grid_xz / frame.sizes.x, 0.0).r;
+    o.material = vec4<f32>(foam_coverage(foam, in.grid_xz, footprint), 0.0, 0.0, 0.0);
     o.motion = prev_px - in.pos.xy;
     return o;
 }

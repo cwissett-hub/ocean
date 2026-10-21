@@ -12,6 +12,7 @@ use crate::render::post::{Post, exposure_ev, exposure_multiplier};
 use crate::render::shade::{FRAME_COMMON, ShadePass};
 use crate::render::sky::{SkyLuts, sun_direction};
 use crate::scene::camera::{CameraRig, FixedCamera};
+use crate::waves::foam::foam_params;
 use crate::waves::gpu_ocean::GpuOcean;
 use crate::waves::spectrum::{
     CASCADE_SIZES_M, REPEAT_PERIOD_S, SpectrumSet, build_spectrum, cascade_band, slope_variance,
@@ -74,7 +75,8 @@ pub struct Renderer {
     sky: SkyLuts,
     mesh: OceanMesh,
     uniforms: wgpu::Buffer,
-    ocean_bind_group: wgpu::BindGroup,
+    /// One per foam ping-pong side (see GpuOcean::foam_index).
+    ocean_bind_groups: [wgpu::BindGroup; 2],
     gbuffer_pipeline: wgpu::RenderPipeline,
     gbuffer: GBuffer,
     shade: ShadePass,
@@ -143,18 +145,31 @@ impl Renderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         use wgpu::BindingResource as B;
-        let ocean_bind_group = d.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("ocean gbuffer"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: B::TextureView(&ocean.displacement_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: B::TextureView(&ocean.derivatives_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: B::Sampler(&sampler) },
-            ],
+        let ocean_bind_groups = std::array::from_fn(|i| {
+            d.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("ocean gbuffer"),
+                layout: &layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: B::TextureView(&ocean.displacement_view) },
+                    wgpu::BindGroupEntry { binding: 2, resource: B::TextureView(&ocean.derivatives_view) },
+                    wgpu::BindGroupEntry { binding: 3, resource: B::Sampler(&sampler) },
+                    wgpu::BindGroupEntry { binding: 4, resource: B::TextureView(&ocean.foam_views()[i]) },
+                ],
+            })
         });
         let pl = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("ocean gbuffer"),
@@ -204,7 +219,7 @@ impl Renderer {
             sky,
             mesh,
             uniforms,
-            ocean_bind_group,
+            ocean_bind_groups,
             gbuffer_pipeline,
             gbuffer,
             shade,
@@ -242,7 +257,7 @@ impl Renderer {
     }
 
     /// Records and submits one frame into `view` (the surface texture).
-    pub fn render(&mut self, view: &wgpu::TextureView, params: &OceanParams, t: f32, _dt: f32) {
+    pub fn render(&mut self, view: &wgpu::TextureView, params: &OceanParams, t: f32, dt: f32) {
         let params = params.clamped();
         self.ensure_targets(params.render_scale);
         self.ensure_spectrum(&params);
@@ -264,13 +279,13 @@ impl Renderer {
             lambda_min: std::array::from_fn(|c| std::f32::consts::TAU / cascade_band(c).1),
             grid: [BASE_CELL_M, LEVELS as f32, GRID as f32, 0.0],
             slope_var: self.stats.slope_var,
-            misc: [self.stats.unresolved, self.stats.hs, exposure, 0.0],
+            misc: [self.stats.unresolved, self.stats.hs, exposure, params.wind_dir_deg.to_radians()],
             resolution: [w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32],
         };
         self.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
 
         let mut enc = self.device.create_command_encoder(&Default::default());
-        self.ocean.update(&mut enc, t % REPEAT_PERIOD_S, params.choppiness);
+        self.ocean.update(&mut enc, t % REPEAT_PERIOD_S, params.choppiness, foam_params(&params), dt);
         self.sky.update(&mut enc, sun);
         {
             let g = &self.gbuffer;
@@ -293,7 +308,7 @@ impl Renderer {
                 ..Default::default()
             });
             pass.set_pipeline(&self.gbuffer_pipeline);
-            pass.set_bind_group(0, &self.ocean_bind_group, &[]);
+            pass.set_bind_group(0, &self.ocean_bind_groups[self.ocean.foam_index()], &[]);
             pass.set_index_buffer(self.mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.mesh.index_count, 0, 0..LEVELS);
         }

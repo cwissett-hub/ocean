@@ -111,3 +111,69 @@ mod tests {
         assert_eq!(p.wind_speed, 5.0);
     }
 }
+
+#[cfg(test)]
+mod override_tests {
+    use super::*;
+
+    #[test]
+    fn sets_numeric_and_bool_fields() {
+        let p = apply_overrides(OceanParams::default(), &["wind_speed=15", "vsync=false", "sun_elevation_deg=-2.5"]).unwrap();
+        assert_eq!(p.wind_speed, 15.0);
+        assert!(!p.vsync);
+        assert_eq!(p.sun_elevation_deg, -2.5);
+    }
+
+    #[test]
+    fn sets_reflection_mode() {
+        let p = apply_overrides(OceanParams::default(), &["reflection_mode=screenspace"]).unwrap();
+        assert_eq!(p.reflection_mode, ReflectionMode::ScreenSpace);
+    }
+
+    #[test]
+    fn rejects_unknown_keys_and_bad_values() {
+        assert!(apply_overrides(OceanParams::default(), &["windspeed=3"]).is_err());
+        assert!(apply_overrides(OceanParams::default(), &["wind_speed=fast"]).is_err());
+        assert!(apply_overrides(OceanParams::default(), &["wind_speed"]).is_err());
+    }
+
+    #[test]
+    fn result_is_clamped() {
+        let p = apply_overrides(OceanParams::default(), &["wind_speed=400"]).unwrap();
+        assert_eq!(p.wind_speed, WIND_SPEED.1);
+    }
+}
+
+/// Applies `key=value` overrides (field names of `OceanParams`), e.g. from `--set` on the
+/// command line, and clamps the result.
+pub fn apply_overrides<S: AsRef<str>>(mut p: OceanParams, overrides: &[S]) -> Result<OceanParams, String> {
+    for o in overrides {
+        let o = o.as_ref();
+        let (key, value) = o.split_once('=').ok_or_else(|| format!("expected key=value, got {o:?}"))?;
+        let num = || value.parse::<f32>().map_err(|_| format!("{key}: {value:?} is not a number"));
+        let flag = || value.parse::<bool>().map_err(|_| format!("{key}: {value:?} is not true/false"));
+        match key {
+            "wind_speed" => p.wind_speed = num()?,
+            "wind_dir_deg" => p.wind_dir_deg = num()?,
+            "fetch_km" => p.fetch_km = num()?,
+            "swell_amount" => p.swell_amount = num()?,
+            "choppiness" => p.choppiness = num()?,
+            "foam_amount" => p.foam_amount = num()?,
+            "sun_elevation_deg" => p.sun_elevation_deg = num()?,
+            "sun_azimuth_deg" => p.sun_azimuth_deg = num()?,
+            "particle_amount" => p.particle_amount = num()?,
+            "render_scale" => p.render_scale = num()?,
+            "show_overlay" => p.show_overlay = flag()?,
+            "vsync" => p.vsync = flag()?,
+            "reflection_mode" => {
+                p.reflection_mode = match value.to_ascii_lowercase().as_str() {
+                    "rt" => ReflectionMode::Rt,
+                    "screenspace" | "ssr" => ReflectionMode::ScreenSpace,
+                    _ => return Err(format!("reflection_mode: {value:?} is not rt/screenspace")),
+                }
+            }
+            _ => return Err(format!("unknown setting {key:?}")),
+        }
+    }
+    Ok(p.clamped())
+}

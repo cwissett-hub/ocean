@@ -6,6 +6,10 @@
 struct Params {
     time: f32,
     choppiness: f32,
+    dt: f32,
+    threshold: f32,
+    inject: f32,
+    decay_per_s: f32,
     _pad: vec2<f32>,
     sizes: vec4<f32>,
 };

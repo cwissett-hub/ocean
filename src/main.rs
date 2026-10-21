@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use ocean::gpu::adapter::GpuContext;
 use ocean::gpu::extent::render_extent;
-use ocean::params::OceanParams;
+use ocean::params::{OceanParams, apply_overrides};
 use ocean::render::frame::Renderer;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -38,10 +38,10 @@ struct App {
     fps_since: Instant,
 }
 
-impl Default for App {
-    fn default() -> Self {
+impl App {
+    fn new(params: OceanParams) -> Self {
         let now = Instant::now();
-        App { gfx: None, params: OceanParams::default(), start: now, last_frame: now, frames: 0, fps_since: now }
+        App { gfx: None, params, start: now, last_frame: now, frames: 0, fps_since: now }
     }
 }
 
@@ -142,9 +142,24 @@ impl ApplicationHandler for App {
     }
 }
 
+/// `--set key=value` (repeatable) overrides any OceanParams field.
+fn parse_args() -> anyhow::Result<OceanParams> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut overrides = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--set" => overrides.push(it.next().ok_or_else(|| anyhow::anyhow!("--set needs key=value"))?.clone()),
+            other => anyhow::bail!("unknown argument {other:?}"),
+        }
+    }
+    apply_overrides(OceanParams::default(), &overrides).map_err(anyhow::Error::msg)
+}
+
 fn main() -> anyhow::Result<()> {
+    let params = parse_args()?;
     let el = EventLoop::new()?;
     el.set_control_flow(ControlFlow::Poll);
-    el.run_app(&mut App::default())?;
+    el.run_app(&mut App::new(params))?;
     Ok(())
 }

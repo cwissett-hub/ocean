@@ -10,6 +10,7 @@ const WATER_F0: f32 = 0.02;
 const WATER_ABSORB: vec3<f32> = vec3<f32>(0.45, 0.065, 0.025);
 const WATER_SCATTER: vec3<f32> = vec3<f32>(0.012, 0.018, 0.026);
 const CREST_TINT: vec3<f32> = vec3<f32>(0.08, 0.55, 0.42);
+const FOAM_ALBEDO: f32 = 0.8;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -45,7 +46,7 @@ fn aerial(col: vec3<f32>, view: vec3<f32>, dist_m: f32) -> vec3<f32> {
     return col * t + horizon * (vec3<f32>(1.0) - t);
 }
 
-fn shade_water(p: vec3<f32>, n_in: vec3<f32>, variance: f32) -> vec3<f32> {
+fn shade_water(p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam: f32) -> vec3<f32> {
     let to_eye = frame.cam_pos.xyz - p;
     let dist = length(to_eye);
     let v = to_eye / dist;
@@ -86,7 +87,10 @@ fn shade_water(p: vec3<f32>, n_in: vec3<f32>, variance: f32) -> vec3<f32> {
     let toward_sun = pow(clamp(dot(-v, normalize(vec3<f32>(sun.x, 0.0, sun.z))), 0.0, 1.0), 4.0);
     let sss = e_sun * CREST_TINT * crest * crest * toward_sun * (1.0 - f) * 0.12 * max(sun.y + 0.1, 0.0);
 
-    return aerial(reflected + spec + body + sss, -v, dist);
+    // Foam: a bright diffuse layer that hides the reflection and the water beneath it.
+    let foam_light = FOAM_ALBEDO / PI * (e_sun * max(n_l, 0.0) + sky_irradiance());
+    let water = reflected + spec + body + sss;
+    return aerial(mix(water, foam_light, foam), -v, dist);
 }
 
 @fragment
@@ -104,5 +108,6 @@ fn fs_shade(in: VsOut) -> @location(0) vec4<f32> {
     }
     let p = world_from_depth(in.pos.xy, depth);
     let nv = textureLoad(normal_tex, px, 0);
-    return vec4<f32>(shade_water(p, nv.xyz, nv.w), 1.0);
+    let foam = textureLoad(material_tex, px, 0).r;
+    return vec4<f32>(shade_water(p, nv.xyz, nv.w, foam), 1.0);
 }

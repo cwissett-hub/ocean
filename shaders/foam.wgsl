@@ -19,14 +19,16 @@ struct Params {
 @group(0) @binding(3) var prev: texture_2d<f32>;
 @group(0) @binding(4) var next: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(5) var<uniform> params: Params;
-// Spray that landed last frame, 1/256 units per 2 m cell (see particles_sim.wgsl).
+// Spray that landed and wake marks laid last frame, 1/256 units per 1 m cell (see
+// particles_sim.wgsl).
 @group(0) @binding(6) var<storage, read> deposits: array<u32>;
 
 const FOAM_RES: u32 = 2048u;
 const FOAM_CASCADES: u32 = 3u;
 const FOAM_MAX: f32 = 4.0;
 const N: f32 = 256.0;
-const DEPOSIT_RES: u32 = 512u;
+const DEPOSIT_RES: u32 = 1024u;
+const DEPOSIT_CELL_M: f32 = 1.0;
 const DEPOSIT_FOAM: f32 = 0.08;
 
 fn foam_step(prev_foam: f32, jacobian: f32, dt: f32) -> f32 {
@@ -49,7 +51,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let jacobian = (1.0 + d.x) * (1.0 + d.y) - d.z * d.z;
     let old = textureLoad(prev, vec2<i32>(id.xy), 0).r;
-    let cell = vec2<u32>(floor(p / 2.0)) % DEPOSIT_RES;
+    let cell = vec2<u32>(floor(p / DEPOSIT_CELL_M)) % DEPOSIT_RES;
     let landed = f32(deposits[cell.y * DEPOSIT_RES + cell.x]) / 256.0 * DEPOSIT_FOAM;
     let foam = min(foam_step(old, jacobian, params.dt) + landed, FOAM_MAX);
     textureStore(next, vec2<i32>(id.xy), vec4<f32>(foam, 0.0, 0.0, 0.0));

@@ -26,6 +26,13 @@ pub struct WaterSample {
     pub velocity: Vec3,
 }
 
+/// One finished query: (height, normal) per requested point, and the sim time it sampled.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueryResult {
+    pub samples: Vec<(f32, Vec3)>,
+    pub time: f32,
+}
+
 pub const INVERT_ITERATIONS: usize = 4;
 
 /// Choppy waves move each surface point sideways, so the water at world point `p` came from
@@ -55,6 +62,8 @@ const MAPPED: u8 = 2;
 struct Slot {
     staging: wgpu::Buffer,
     count: usize,
+    /// Sim time of the wave textures this slot sampled.
+    time: f32,
     state: Arc<AtomicU8>,
 }
 
@@ -69,6 +78,7 @@ pub struct WaveQuery {
     params: wgpu::Buffer,
     slots: Vec<Slot>,
     requested: Vec<Vec2>,
+    requested_time: f32,
     /// SeabedMap::params for the frame (waves fade out in the shallows).
     seabed: [f32; 4],
     recorded: Option<usize>,
@@ -155,6 +165,7 @@ impl WaveQuery {
             .map(|_| Slot {
                 staging: buffer("query staging", RESULT_BYTES, U::MAP_READ | U::COPY_DST),
                 count: 0,
+                time: 0.0,
                 state: Arc::new(AtomicU8::new(IDLE)),
             })
             .collect();
@@ -167,15 +178,18 @@ impl WaveQuery {
             params,
             slots,
             requested: Vec::new(),
+            requested_time: 0.0,
             seabed: [0.0; 4],
             recorded: None,
             next: 0,
         }
     }
 
-    /// Points (world xz) to evaluate in the next `record`; at most MAX_QUERY_POINTS are used.
-    pub fn request(&mut self, points: &[Vec2]) {
+    /// Points (local xz) to evaluate in the next `record`, against the waves at sim time `t`
+    /// (this frame's ocean update); at most MAX_QUERY_POINTS are used.
+    pub fn request(&mut self, points: &[Vec2], t: f32) {
         self.requested = points.iter().take(MAX_QUERY_POINTS).copied().collect();
+        self.requested_time = t;
     }
 
     pub fn set_seabed(&mut self, params: [f32; 4]) {
@@ -211,6 +225,7 @@ impl WaveQuery {
         }
         enc.copy_buffer_to_buffer(&self.results, 0, &self.slots[i].staging, 0, (n * 16) as u64);
         self.slots[i].count = n;
+        self.slots[i].time = self.requested_time;
         self.recorded = Some(i);
         self.next = (i + 1) % SLOTS;
     }
@@ -228,7 +243,7 @@ impl WaveQuery {
     }
 
     /// The newest finished results, if any arrived since the last call (non-blocking).
-    pub fn poll(&mut self, device: &wgpu::Device) -> Option<Vec<(f32, Vec3)>> {
+    pub fn poll(&mut self, device: &wgpu::Device) -> Option<QueryResult> {
         let _ = device.poll(wgpu::PollType::Poll);
         let mut newest = None;
         // Oldest first, so the last one read is the newest.
@@ -243,20 +258,23 @@ impl WaveQuery {
                 bytemuck::cast_slice(&slot.staging.slice(range).get_mapped_range().expect("mapped query")).to_vec();
             slot.staging.unmap();
             slot.state.store(IDLE, Ordering::Release);
-            newest = Some(data.iter().map(|r| (r[0], Vec3::new(r[1], r[2], r[3]))).collect());
+            newest = Some(QueryResult {
+                samples: data.iter().map(|r| (r[0], Vec3::new(r[1], r[2], r[3]))).collect(),
+                time: slot.time,
+            });
         }
         newest
     }
 
     /// Blocking query of the ocean's current textures. Tests only.
     pub fn read_blocking(&mut self, ctx: &GpuContext, points: &[Vec2]) -> Vec<(f32, Vec3)> {
-        self.request(points);
+        self.request(points, 0.0);
         let mut enc = ctx.device.create_command_encoder(&Default::default());
         self.record(&mut enc);
         ctx.queue.submit([enc.finish()]);
         self.after_submit();
         ctx.device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
-        self.poll(&ctx.device).unwrap_or_default()
+        self.poll(&ctx.device).map(|r| r.samples).unwrap_or_default()
     }
 }
 

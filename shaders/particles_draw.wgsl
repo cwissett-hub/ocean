@@ -36,7 +36,8 @@ const CORNERS: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
 fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut {
     let q = particles[ii];
     var o: VsOut;
-    if (q.life <= 0.0) {
+    // Dead particles and wake foam marks (which only deposit foam) draw nothing.
+    if (q.life <= 0.0 || q.kind == 2u) {
         o.clip = vec4<f32>(2.0, 2.0, 2.0, 1.0);
         return o;
     }

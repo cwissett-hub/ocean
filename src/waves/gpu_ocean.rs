@@ -27,6 +27,9 @@ pub const FOAM_RES: u32 = 2048;
 /// Longest step foam integrates in one frame; a hitch must not flood the sea with foam.
 const MAX_FOAM_DT: f32 = 0.1;
 
+/// Side of the particle deposit grid (1 m cells over cascade 0's 1024 m period).
+pub const DEPOSIT_RES: u32 = 1024;
+
 pub struct GpuOcean {
     queue: wgpu::Queue,
     h0: wgpu::Texture,
@@ -42,7 +45,8 @@ pub struct GpuOcean {
     fft_h: (wgpu::ComputePipeline, wgpu::BindGroup),
     fft_v: (wgpu::ComputePipeline, wgpu::BindGroup),
     assemble: (wgpu::ComputePipeline, wgpu::BindGroup),
-    /// Spray deposits (512² u32, 1/256 units per 2 m cell) written by particles, read by foam.
+    /// Spray and wake deposits (DEPOSIT_RES² u32, 1/256 units per 1 m cell, tiling with the
+    /// foam texture every 1024 m) written by particles, read by foam.
     deposits: wgpu::Buffer,
     /// Foam ping-pong: pass i reads foam_views[i] and writes foam_views[1 - i].
     foam_passes: [(wgpu::ComputePipeline, wgpu::BindGroup); 2],
@@ -201,7 +205,7 @@ impl GpuOcean {
         });
         let deposits = d.create_buffer(&wgpu::BufferDescriptor {
             label: Some("spray deposits"),
-            size: 512 * 512 * 4,
+            size: (DEPOSIT_RES * DEPOSIT_RES * 4) as u64,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });

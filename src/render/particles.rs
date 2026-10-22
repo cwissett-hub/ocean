@@ -2,6 +2,8 @@
 //! landing back as foam. Anything else that splashes (a boat hull, its wake) pushes
 //! `SpawnRequest`s.
 
+use crate::waves::gpu_ocean::DEPOSIT_RES;
+
 pub const MAX_PARTICLES: u32 = 65_536;
 /// Spray starts once the wind is strong enough to tear crests.
 const SPRAY_WIND_MIN: f32 = 8.0;
@@ -10,6 +12,8 @@ const MIST_RATE: f32 = 0.004;
 
 pub const KIND_SPRAY: u32 = 0;
 pub const KIND_MIST: u32 = 1;
+/// Never drawn: deposits foam where it is on its first update, then dies (wakes).
+pub const KIND_FOAM_MARK: u32 = 2;
 
 /// A burst of `count` particles at a point (world), all starting with `velocity`.
 #[repr(C)]
@@ -52,7 +56,7 @@ pub fn pack_requests(reqs: &[SpawnRequest], budget: u32) -> Vec<SpawnRequest> {
 const PARTICLE_BYTES: u64 = 48;
 const MAX_REQUESTS: usize = 256;
 /// Particles CPU requests may add per frame.
-const REQUEST_BUDGET: u32 = 4096;
+pub const REQUEST_BUDGET: u32 = 4096;
 const EMIT_CANDIDATES: u32 = 16_384;
 /// Side of the square ahead of the camera where crests are checked for spray, m.
 const EMIT_AREA_M: f32 = 192.0;
@@ -70,6 +74,8 @@ struct SimParams {
     area_origin: [f32; 2],
     area_size: f32,
     candidates: u32,
+    shift: [f32; 2],
+    _pad: [f32; 2],
 }
 
 /// What the particles need from the rest of the frame.
@@ -88,6 +94,8 @@ pub struct ParticleSystem {
     params: wgpu::Buffer,
     requests_buf: wgpu::Buffer,
     pending: Vec<SpawnRequest>,
+    /// Origin rebase to apply to every live particle in the next `record`.
+    pending_shift: glam::Vec2,
     sim_group: wgpu::BindGroup,
     clear: wgpu::ComputePipeline,
     emit: wgpu::ComputePipeline,
@@ -327,6 +335,7 @@ impl ParticleSystem {
             params,
             requests_buf,
             pending: Vec::new(),
+            pending_shift: glam::Vec2::ZERO,
             sim_group,
             clear,
             emit,
@@ -372,6 +381,11 @@ impl ParticleSystem {
         self.draw_group = Self::draw_group(d, &self.draw_layout, frame, &self.particles, g);
     }
 
+    /// Follows an origin rebase: every live particle moves by −shift (in the next `record`).
+    pub fn shift(&mut self, shift: glam::Vec2) {
+        self.pending_shift += shift;
+    }
+
     /// Queues a burst for the next frame (boat hull, wake, ...).
     pub fn push(&mut self, r: SpawnRequest) {
         self.pending.push(r);
@@ -400,6 +414,8 @@ impl ParticleSystem {
             area_origin: (centre - glam::Vec2::splat(EMIT_AREA_M * 0.5)).to_array(),
             area_size: EMIT_AREA_M,
             candidates: EMIT_CANDIDATES,
+            shift: std::mem::take(&mut self.pending_shift).to_array(),
+            _pad: [0.0; 2],
         };
         self.queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&p));
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -408,7 +424,7 @@ impl ParticleSystem {
         });
         pass.set_bind_group(0, &self.sim_group, &[]);
         pass.set_pipeline(&self.clear);
-        pass.dispatch_workgroups(512 * 512 / 64, 1, 1);
+        pass.dispatch_workgroups(DEPOSIT_RES * DEPOSIT_RES / 64, 1, 1);
         pass.set_pipeline(&self.emit);
         pass.dispatch_workgroups(EMIT_CANDIDATES.div_ceil(64), 1, 1);
         if !reqs.is_empty() {

@@ -4,6 +4,7 @@
 
 use glam::{Mat4, Quat, Vec2, Vec3};
 
+use crate::render::particles::{KIND_FOAM_MARK, KIND_SPRAY, SpawnRequest};
 use crate::waves::query::WaterSample;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -94,6 +95,10 @@ pub struct RaftBody {
     pub grounded: bool,
     /// Seaward direction (down the terrain slope) while aground.
     pub downhill: Vec2,
+    /// Distance sailed over the ground, m (the wake is laid by it).
+    pub travelled: f32,
+    /// How much of `travelled` the last `step` added.
+    pub last_step_travel: f32,
 }
 
 impl RaftBody {
@@ -106,7 +111,14 @@ impl RaftBody {
             heading,
             grounded: false,
             downhill: Vec2::ZERO,
+            travelled: 0.0,
+            last_step_travel: 0.0,
         }
+    }
+
+    /// Follows an origin rebase (world::origin): local positions move by −shift.
+    pub fn rebase(&mut self, shift: Vec2) {
+        self.position -= Vec3::new(shift.x, 0.0, shift.y);
     }
 
     pub fn forward(&self) -> Vec3 {
@@ -138,6 +150,7 @@ impl RaftBody {
         terrain: &dyn Fn(Vec2) -> f32,
         dt: f32,
     ) {
+        self.last_step_travel = 0.0;
         if !(dt.is_finite() && dt > 0.0) {
             return;
         }
@@ -199,10 +212,17 @@ impl RaftBody {
             self.angular_velocity += Vec3::new(pitch_roll.x, yaw_acc, pitch_roll.z) * h;
             self.angular_velocity.y = self.angular_velocity.y.clamp(-MAX_YAW_RATE, MAX_YAW_RATE);
             self.position += self.velocity * h;
-            self.heading = (self.heading + self.angular_velocity.y * h).rem_euclid(std::f32::consts::TAU);
-            // Yaw is tracked by `heading`; the quaternion integrates only pitch and roll.
-            let tilt_w = Vec3::new(self.angular_velocity.x, 0.0, self.angular_velocity.z);
+            let travel = Vec2::new(self.velocity.x, self.velocity.z).length() * h;
+            self.travelled += travel;
+            self.last_step_travel += travel;
+            // Yaw is tracked by `heading`; the quaternion integrates only pitch and roll. The
+            // tilt lives in the yaw frame (rotation = yaw · tilt): split it off with the heading
+            // the rotation was built from, before turning, and turn the world-axis angular
+            // velocity into that frame.
             let tilt = self.tilt();
+            self.heading = (self.heading + self.angular_velocity.y * h).rem_euclid(std::f32::consts::TAU);
+            let tilt_w = Quat::from_rotation_y(self.heading).inverse()
+                * Vec3::new(self.angular_velocity.x, 0.0, self.angular_velocity.z);
             let tilt = if tilt_w.length_squared() > 0.0 {
                 (Quat::from_scaled_axis(tilt_w * h) * tilt).normalize()
             } else {
@@ -271,6 +291,76 @@ impl RaftBody {
         self.downhill = self.downhill.normalize_or_zero();
         (acc, torque)
     }
+}
+
+/// Foam marks laid across the stern every WAKE_SPACING_M sailed.
+pub const WAKE_LANES: usize = 3;
+const WAKE_SPACING_M: f32 = 0.5;
+const WAKE_LANE_M: f32 = 1.0;
+/// A step that sails further than this only marks its last stretch.
+const WAKE_MAX_MARKS: i64 = 32;
+const STERN_M: f32 = 1.6;
+/// The bow throws spray when it slams down into the water while under way.
+const SPRAY_MIN_SPEED: f32 = 0.6;
+const SPRAY_MIN_PLUNGE: f32 = 0.4;
+/// Particles per second per (m/s of plunge beyond the minimum × m/s forward), per bow point.
+const SPRAY_RATE: f32 = 40.0;
+const SPRAY_MAX_PER_POINT: u32 = 2048;
+const BOW_POINTS: [usize; 3] = [6, 7, 8];
+
+/// What the raft throws into the particle system after a `step` of `dt`: wake foam marks
+/// (first, so a spray burst never starves the wake when requests are packed) and bow spray.
+pub fn raft_emissions(body: &RaftBody, water: &[WaterSample; 9], dt: f32) -> Vec<SpawnRequest> {
+    let mut out = Vec::new();
+    if !(dt.is_finite() && dt > 0.0) {
+        return out;
+    }
+    let fwd = body.forward();
+    let side = Vec3::new(fwd.z, 0.0, -fwd.x);
+    let before = body.travelled - body.last_step_travel;
+    let last = (body.travelled / WAKE_SPACING_M).floor() as i64;
+    let first = ((before / WAKE_SPACING_M).floor() as i64 + 1).max(last - WAKE_MAX_MARKS + 1);
+    for k in first..=last {
+        // The stern passed mark k this far back along the track.
+        let back = body.travelled - k as f32 * WAKE_SPACING_M;
+        let stern = body.position - fwd * (STERN_M + back);
+        for lane in 0..WAKE_LANES {
+            let x = (lane as f32 - (WAKE_LANES as f32 - 1.0) / 2.0) * WAKE_LANE_M;
+            out.push(SpawnRequest {
+                position: (stern + side * x).to_array(),
+                kind: KIND_FOAM_MARK,
+                velocity: [0.0; 3],
+                count: 1,
+            });
+        }
+    }
+    let speed = body.velocity.dot(fwd);
+    if speed <= SPRAY_MIN_SPEED {
+        return out;
+    }
+    for i in BOW_POINTS {
+        let r = body.rotation * RAFT_SAMPLE_OFFSETS[i];
+        let p = body.position + r;
+        let w = &water[i];
+        let submerged = w.height > p.y - RAFT_DRAFT_M;
+        let plunge = -(body.velocity.y + body.angular_velocity.cross(r).y - w.velocity.y) - SPRAY_MIN_PLUNGE;
+        if !(submerged && plunge > 0.0) {
+            continue;
+        }
+        let count = (plunge * speed * SPRAY_RATE * dt)
+            .ceil()
+            .min(SPRAY_MAX_PER_POINT as f32) as u32;
+        let x = RAFT_SAMPLE_OFFSETS[i].x;
+        let outward = if x == 0.0 { 0.0 } else { x.signum() };
+        let v = fwd * (0.7 * speed) + side * (1.2 * outward) + Vec3::Y * (1.2 + 1.5 * plunge);
+        out.push(SpawnRequest {
+            position: (p + fwd * 0.2 + Vec3::Y * 0.05).to_array(),
+            kind: KIND_SPRAY,
+            velocity: v.to_array(),
+            count,
+        });
+    }
+    out
 }
 
 #[cfg(test)]
@@ -465,6 +555,37 @@ mod tests {
     }
 
     #[test]
+    fn settles_onto_the_water_slope_at_any_heading() {
+        // A static slope rising along +x: the deck must come to lie on it, whichever way the
+        // raft points (a frame mix-up made the torque push the wrong way off heading 0).
+        let normal = Vec3::new(-0.2, 1.0, 0.0).normalize();
+        for heading in [0.0f32, 0.7, 1.6, 3.5, 5.0] {
+            let mut r = RaftBody::at(Vec3::ZERO, heading);
+            for _ in 0..(5.0 / DT) as usize {
+                let mut w = flat();
+                for (s, p) in w.iter_mut().zip(r.sample_points()) {
+                    s.height = 0.2 * p.x;
+                    s.normal = normal;
+                }
+                r.step(&w, Vec2::ZERO, &controls(0.0, 0.0, false), &deep, DT);
+            }
+            let off = (r.rotation * Vec3::Y).angle_between(normal).to_degrees();
+            assert!(off < 1.5, "heading {heading}: deck {off}° off the water slope");
+        }
+    }
+
+    #[test]
+    fn hull_turns_with_its_heading() {
+        // The drawn hull (rotation) must point where the physics says (heading) after a turn.
+        let mut r = RaftBody::at(Vec3::ZERO, 0.0);
+        r.velocity = r.forward() * 2.0;
+        run(&mut r, Vec2::ZERO, &controls(1.0, 1.0, false), 10.0, &deep);
+        assert!(r.heading > 0.5, "barely turned: {}", r.heading);
+        let off = (r.rotation * Vec3::Z).angle_between(r.forward()).to_degrees();
+        assert!(off < 1.0, "hull points {off}° away from the heading");
+    }
+
+    #[test]
     fn heave_tracks_a_passing_wave_closely() {
         // 0.3 m, 4 s waves: a light raft rides on the surface, not behind it.
         let mut r = RaftBody::at(Vec3::ZERO, 0.0);
@@ -496,5 +617,148 @@ mod tests {
             .cloned()
             .fold(Vec2::new(f32::MIN, 0.0), |a, b| if b.x > a.x { b } else { a });
         assert!(bow.x > 11.0);
+    }
+
+    fn spray(reqs: &[SpawnRequest]) -> u32 {
+        reqs.iter().filter(|r| r.kind == KIND_SPRAY).map(|r| r.count).sum()
+    }
+
+    fn marks(reqs: &[SpawnRequest]) -> usize {
+        reqs.iter().filter(|r| r.kind == KIND_FOAM_MARK).count()
+    }
+
+    fn moving(speed: f32, vy: f32) -> RaftBody {
+        let mut r = RaftBody::at(Vec3::ZERO, 0.3);
+        r.velocity = r.forward() * speed + Vec3::new(0.0, vy, 0.0);
+        r
+    }
+
+    #[test]
+    fn bow_spray_only_when_plunging_at_speed() {
+        assert!(
+            spray(&raft_emissions(&moving(2.5, -1.2), &flat(), DT)) > 0,
+            "fast, bow plunging"
+        );
+        assert_eq!(spray(&raft_emissions(&moving(0.3, -1.2), &flat(), DT)), 0, "too slow");
+        assert_eq!(spray(&raft_emissions(&moving(2.5, 0.6), &flat(), DT)), 0, "bow rising");
+        assert_eq!(
+            spray(&raft_emissions(&moving(2.5, -0.2), &flat(), DT)),
+            0,
+            "gentle pitch"
+        );
+        // Out of the water (riding over a trough), the bow throws nothing.
+        let mut high = moving(2.5, -1.2);
+        high.position.y = 0.6;
+        assert_eq!(spray(&raft_emissions(&high, &flat(), DT)), 0, "bow in the air");
+        // Harder impacts throw more.
+        let soft = spray(&raft_emissions(&moving(2.5, -0.7), &flat(), DT));
+        let hard = spray(&raft_emissions(&moving(2.5, -2.0), &flat(), DT));
+        assert!(hard > soft, "soft {soft} hard {hard}");
+        for r in raft_emissions(&moving(2.5, -1.2), &flat(), DT) {
+            if r.kind == KIND_SPRAY {
+                let p = Vec3::from(r.position);
+                assert!(p.dot(moving(1.0, 0.0).forward()) > 1.0, "spray from the bow, not {p}");
+                assert!(r.velocity[1] > 0.5, "thrown upwards");
+            }
+        }
+    }
+
+    #[test]
+    fn wake_marks_every_half_metre() {
+        let mut r = RaftBody::at(Vec3::ZERO, 1.0);
+        r.velocity = r.forward() * 2.0;
+        let mut total = 0;
+        for _ in 0..(8.0 / DT) as usize {
+            r.step(&flat(), Vec2::ZERO, &controls(1.0, 0.0, false), &deep, DT);
+            let reqs = raft_emissions(&r, &flat(), DT);
+            for m in reqs.iter().filter(|q| q.kind == KIND_FOAM_MARK) {
+                let p = Vec3::from(m.position);
+                let behind = (p - r.position).dot(r.forward());
+                assert!((-2.5..=-1.0).contains(&behind), "mark {behind} m along the hull");
+            }
+            total += marks(&reqs);
+        }
+        let want = (r.travelled / 0.5).floor() as usize * WAKE_LANES;
+        assert!(r.travelled > 5.0, "travelled {}", r.travelled);
+        assert!(
+            total.abs_diff(want) <= WAKE_LANES,
+            "{total} marks over {} m",
+            r.travelled
+        );
+        // Standing still leaves no wake.
+        let still = RaftBody::at(Vec3::ZERO, 0.0);
+        assert_eq!(marks(&raft_emissions(&still, &flat(), DT)), 0);
+    }
+
+    #[test]
+    fn raft_state_survives_rebase() {
+        use crate::scene::buoy::BuoyBody;
+        use crate::scene::cameras::{CameraController, FreeFlyInput};
+        let s = Vec2::new(4096.0, -1024.0);
+        let sea = |_: Vec2| 0.3;
+        let c = controls(0.6, 0.3, true);
+        let wind = Vec2::new(3.0, 5.0);
+        let make = || {
+            let mut r = RaftBody::at(Vec3::new(4200.0, 0.1, -900.0), 0.7);
+            r.velocity = Vec3::new(0.8, -0.1, 1.2);
+            let cam = CameraController::new(&r);
+            let buoy = BuoyBody::at(Vec3::new(4180.0, 0.0, -880.0));
+            (r, cam, buoy)
+        };
+        let step = |r: &mut RaftBody, cam: &mut CameraController, buoy: &mut BuoyBody| {
+            for _ in 0..30 {
+                r.step(&flat(), wind, &c, &deep, DT);
+                buoy.step(&[flat()[0]; 5], DT);
+                cam.update(DT, r, 30.0, &FreeFlyInput::default(), &sea);
+            }
+        };
+        let shift3 = Vec3::new(s.x, 0.0, s.y);
+        // A: rebase, then step.
+        let (mut ra, mut ca, mut ba) = make();
+        ca.update(DT, &ra, 30.0, &FreeFlyInput::default(), &sea);
+        ra.rebase(s);
+        ca.rebase(s);
+        ba.position -= shift3;
+        step(&mut ra, &mut ca, &mut ba);
+        let cam_a = ca.update(DT, &ra, 30.0, &FreeFlyInput::default(), &sea);
+        // B: step, then rebase.
+        let (mut rb, mut cb, mut bb) = make();
+        cb.update(DT, &rb, 30.0, &FreeFlyInput::default(), &sea);
+        step(&mut rb, &mut cb, &mut bb);
+        rb.rebase(s);
+        cb.rebase(s);
+        bb.position -= shift3;
+        let cam_b = cb.update(DT, &rb, 30.0, &FreeFlyInput::default(), &sea);
+        assert!(
+            (ra.position - rb.position).length() < 1e-3,
+            "{} vs {}",
+            ra.position,
+            rb.position
+        );
+        assert!((ra.velocity - rb.velocity).length() < 1e-4);
+        assert!((ra.heading - rb.heading).abs() < 1e-5);
+        assert!((ba.position - bb.position).length() < 1e-3);
+        assert!(
+            (cam_a.position - cam_b.position).length() < 1e-3,
+            "{} vs {}",
+            cam_a.position,
+            cam_b.position
+        );
+    }
+
+    #[test]
+    fn emissions_respect_request_budget() {
+        use crate::render::particles::{REQUEST_BUDGET, pack_requests};
+        // A violent ten-second step: far more spray than one frame may spawn.
+        let mut r = moving(6.0, -5.0);
+        r.last_step_travel = 60.0;
+        r.travelled = 60.0;
+        let reqs = raft_emissions(&r, &flat(), 10.0);
+        let wanted: u32 = reqs.iter().map(|q| q.count).sum();
+        assert!(wanted > REQUEST_BUDGET, "only {wanted} requested");
+        let packed = pack_requests(&reqs, REQUEST_BUDGET);
+        assert!(packed.iter().map(|q| q.count).sum::<u32>() <= REQUEST_BUDGET);
+        // Wake marks come first, so spray never starves the wake.
+        assert_eq!(marks(&packed), marks(&reqs));
     }
 }

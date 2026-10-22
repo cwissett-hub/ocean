@@ -131,3 +131,26 @@ fn query_attenuates_like_the_surface() {
     }
     assert!(compared >= 8, "only {compared} points had waves to compare");
 }
+
+#[test]
+fn results_carry_the_time_they_sample() {
+    // Results can arrive a frame or two late and two at once; anything differencing them over
+    // time (water vertical velocity) needs the time the waves were sampled, not arrival time.
+    let ctx = GpuContext::new_headless().expect("gpu");
+    let lib = ShaderLibrary::embedded();
+    let spectrum = build_spectrum(&OceanParams::default(), 42);
+    let gpu = GpuOcean::new(&ctx, &lib, &spectrum);
+    let map = ocean::render::seabed::SeabedMap::new(&ctx.device);
+    let mut query = WaveQuery::new(&ctx, &lib, &gpu, &map);
+    for t in [7.25f32, 7.5] {
+        query.request(&[Vec2::new(1.0, 2.0)], t);
+        let mut enc = ctx.device.create_command_encoder(&Default::default());
+        query.record(&mut enc);
+        ctx.queue.submit([enc.finish()]);
+        query.after_submit();
+    }
+    ctx.device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+    let r = query.poll(&ctx.device).expect("results");
+    assert_eq!(r.time, 7.5, "newest result, stamped with its sample time");
+    assert_eq!(r.samples.len(), 1);
+}

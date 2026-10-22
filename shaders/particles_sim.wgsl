@@ -1,7 +1,8 @@
 // #include frame_common.wgsl
 // #include seabed_common.wgsl
 // Spray and mist simulation. Entry points: clear_deposits, emit (crest spray + mist), spawn
-// (CPU SpawnRequests), update (physics; landing spray deposits foam for the next frame).
+// (CPU SpawnRequests), update (physics; landing spray and wake marks deposit foam for the next
+// frame).
 
 struct Particle {
     pos: vec3<f32>,
@@ -32,6 +33,9 @@ struct SimParams {
     area_origin: vec2<f32>,
     area_size: f32,
     candidates: u32,
+    // Origin rebase this frame: every live particle moves by −shift.
+    shift: vec2<f32>,
+    _pad: vec2<f32>,
 };
 
 @group(0) @binding(1) var displacement: texture_2d_array<f32>;
@@ -50,11 +54,14 @@ fn shallows(p: vec2<f32>) -> f32 {
 }
 
 const MAX_PARTICLES: u32 = 65536u;
-const DEPOSIT_RES: u32 = 512u;
-const DEPOSIT_CELL_M: f32 = 2.0;
+const DEPOSIT_RES: u32 = 1024u;
+const DEPOSIT_CELL_M: f32 = 1.0;
 const FOAM_CASCADES: u32 = 3u;
 const KIND_SPRAY: u32 = 0u;
 const KIND_MIST: u32 = 1u;
+const KIND_FOAM_MARK: u32 = 2u;
+// Foam a wake mark leaves (1/256 units; see foam.wgsl DEPOSIT_FOAM).
+const MARK_DEPOSIT: u32 = 384u;
 const G: f32 = 9.81;
 const SPRAY_BURST: u32 = 6u;
 
@@ -94,7 +101,10 @@ fn spawn(kind: u32, pos: vec3<f32>, vel: vec3<f32>, seed: u32) {
     q.vel = vel;
     q.kind = kind;
     q.seed = hash(seed ^ 0x9e3779b9u);
-    if (kind == KIND_SPRAY) {
+    if (kind == KIND_FOAM_MARK) {
+        q.max_life = 1.0;
+        q.size = 0.0;
+    } else if (kind == KIND_SPRAY) {
         q.max_life = 1.2 + 1.6 * hash(seed + 7u);
         q.size = 0.25 + 0.5 * hash(seed + 11u);
     } else {
@@ -103,6 +113,13 @@ fn spawn(kind: u32, pos: vec3<f32>, vel: vec3<f32>, seed: u32) {
     }
     q.life = q.max_life;
     particles[allocate()] = q;
+}
+
+// Foam for the foam pass next frame, in the 1 m cell under `p` (tiling every 1024 m).
+fn deposit(p: vec2<f32>, amount: u32) {
+    let cell = vec2<i32>(floor(p / DEPOSIT_CELL_M));
+    let c = vec2<u32>(vec2<i32>(i32(DEPOSIT_RES)) + cell % i32(DEPOSIT_RES)) % DEPOSIT_RES;
+    atomicAdd(&deposits[c.y * DEPOSIT_RES + c.x], amount);
 }
 
 @compute @workgroup_size(64, 1, 1)
@@ -166,6 +183,13 @@ fn update(@builtin(global_invocation_id) id: vec3<u32>) {
     if (q.life <= 0.0) {
         return;
     }
+    q.pos -= vec3<f32>(sp.shift.x, 0.0, sp.shift.y);
+    if (q.kind == KIND_FOAM_MARK) {
+        deposit(q.pos.xz, MARK_DEPOSIT);
+        q.life = 0.0;
+        particles[i] = q;
+        return;
+    }
     let dt = sp.dt;
     q.life -= dt;
     let wind = vec3<f32>(sp.wind.x, 0.0, sp.wind.y);
@@ -177,10 +201,8 @@ fn update(@builtin(global_invocation_id) id: vec3<u32>) {
         // Spray lands on the water, or on the beach where that is higher.
         let water = max(disp(q.pos.xz).y, seabed_height(seabed, frame.seabed, q.pos.xz));
         if (q.vel.y < 0.0 && q.pos.y < water) {
-            // Landed: leave foam where it fell, for the foam pass next frame.
-            let cell = vec2<i32>(floor(q.pos.xz / DEPOSIT_CELL_M));
-            let c = vec2<u32>(vec2<i32>(i32(DEPOSIT_RES)) + cell % i32(DEPOSIT_RES)) % DEPOSIT_RES;
-            atomicAdd(&deposits[c.y * DEPOSIT_RES + c.x], 64u);
+            // Landed: leave foam where it fell.
+            deposit(q.pos.xz, 64u);
             q.life = 0.0;
         }
     } else {

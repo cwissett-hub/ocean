@@ -23,7 +23,7 @@ use crate::scene::buoy::{BuoyBody, build_buoy_mesh};
 use crate::scene::camera::Camera;
 use crate::scene::cameras::{CameraController, CameraMode, FreeFlyInput};
 use crate::scene::mesh::material;
-use crate::scene::raft::{RaftBody, RaftControls};
+use crate::scene::raft::{RaftBody, RaftControls, raft_emissions};
 use crate::scene::raft_mesh::build_raft_mesh;
 use crate::waves::foam::foam_params;
 use crate::waves::gpu_ocean::GpuOcean;
@@ -414,23 +414,30 @@ impl Renderer {
     /// Steps the raft and buoy on the newest water samples, moves the camera, and queues the
     /// next water query (raft, buoy, camera points).
     fn update_world(&mut self, params: &OceanParams, input: &FrameInput, t: f32, dt: f32) -> Camera {
+        self.rebase_if_far();
         if input.cycle_camera {
             self.cameras.mode = self.cameras.mode.next();
         }
-        if let Some(results) = self.query.poll(&self.device).filter(|r| r.len() == QUERY_POINTS) {
-            let heights: [f32; QUERY_POINTS] = std::array::from_fn(|i| results[i].0);
+        if let Some(r) = self
+            .query
+            .poll(&self.device)
+            .filter(|r| r.samples.len() == QUERY_POINTS)
+        {
+            let heights: [f32; QUERY_POINTS] = std::array::from_fn(|i| r.samples[i].0);
+            // Differenced over the times the waves were sampled: results can arrive late and
+            // bunched, and arrival times would turn that into huge spurious velocities.
             let samples = std::array::from_fn(|i| {
                 let vy = match self.last_heights {
-                    Some((prev, pt)) if t > pt => (heights[i] - prev[i]) / (t - pt),
+                    Some((prev, pt)) if r.time > pt => (heights[i] - prev[i]) / (r.time - pt),
                     _ => 0.0,
                 };
                 WaterSample {
                     height: heights[i],
-                    normal: results[i].1,
+                    normal: r.samples[i].1,
                     velocity: Vec3::new(0.0, vy, 0.0),
                 }
             });
-            self.last_heights = Some((heights, t));
+            self.last_heights = Some((heights, r.time));
             self.water = Some(samples);
         }
         let a = params.wind_dir_deg.to_radians();
@@ -453,6 +460,9 @@ impl Renderer {
             let raft_w: [WaterSample; 9] = std::array::from_fn(|i| s[RAFT_Q + i]);
             let buoy_w: [WaterSample; 5] = std::array::from_fn(|i| s[BUOY_Q + i]);
             self.raft.step(&raft_w, wind, &controls, &terrain, dt.min(0.25));
+            for r in raft_emissions(&self.raft, &raft_w, dt.min(0.25)) {
+                self.particles.push(r);
+            }
             self.buoy_body.step(&buoy_w, dt.min(0.25));
             camera_water = s[CAMERA_Q].height;
         }
@@ -486,8 +496,29 @@ impl Renderer {
         points[RAFT_Q..RAFT_Q + 9].copy_from_slice(&self.raft.sample_points());
         points[BUOY_Q..BUOY_Q + 5].copy_from_slice(&self.buoy_body.sample_points());
         points[CAMERA_Q] = Vec2::new(cam.position.x, cam.position.z);
-        self.query.request(&points);
+        self.query.request(&points, t);
         cam
+    }
+
+    /// Keeps f32 render coordinates small: once the raft is REBASE_DISTANCE_M from the local
+    /// origin, everything local moves by a whole number of wave periods (1024 m), so the waves,
+    /// foam and pending water queries line up unchanged. Motion vectors and reflection history
+    /// restart for a frame.
+    fn rebase_if_far(&mut self) {
+        let Some(s) = self
+            .origin
+            .rebase_for(Vec2::new(self.raft.position.x, self.raft.position.z))
+        else {
+            return;
+        };
+        self.origin.apply(s);
+        self.raft.rebase(s);
+        self.cameras.rebase(s);
+        self.buoy_body.position -= Vec3::new(s.x, 0.0, s.y);
+        self.particles.shift(s);
+        self.objects.rebase(s);
+        self.reflections.invalidate_history();
+        self.prev_view_proj = None;
     }
 
     /// Plans island streaming around the raft, drops far islands, and uploads a few finished

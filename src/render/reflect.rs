@@ -196,6 +196,11 @@ impl ReflectionPass {
         self.current = 0;
     }
 
+    /// Drops the temporal history (after an origin rebase the reprojection would be wrong).
+    pub fn invalidate_history(&mut self) {
+        self.history_valid = false;
+    }
+
     /// Adds the hardware ray-traced path (only on devices with ray query).
     pub fn enable_rt(
         &mut self,

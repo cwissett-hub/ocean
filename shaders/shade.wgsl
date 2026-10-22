@@ -102,8 +102,13 @@ fn shade_water(px: vec2<f32>, p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam
     let front = pow(max(dot(v, n), 0.0), 2.0);
     let sss = (1.0 - f) * SSS_TINT * (e_sun * (SSS_BACK * back + SSS_SUN * max(n_l, 0.0)) + e_in * SSS_FRONT * front);
 
-    // Foam: a bright diffuse layer that hides the reflection and the water beneath it.
-    let foam_light = FOAM_ALBEDO / PI * (e_sun * max(n_l, 0.0) + sky_irradiance());
+    // Foam: a thick bubbly layer that hides the reflection and the water beneath it. Light
+    // wraps round it, the side away from the sun is lit blue-white by the sky, and back-lit
+    // foam glows a little as light scatters through its bubbles.
+    let wrap = clamp((n_l + 0.35) / 1.35, 0.0, 1.0);
+    let through = pow(max(dot(-v, sun), 0.0), 3.0) * 0.35;
+    let sky_tint = vec3<f32>(0.82, 0.92, 1.0);
+    let foam_light = FOAM_ALBEDO / PI * (e_sun * (wrap + through) + sky_irradiance() * sky_tint);
     let water = reflected + spec + body + sss;
     return aerial(mix(water, foam_light, foam), -v, dist);
 }

@@ -28,11 +28,32 @@ fn wake_height(map: texture_2d<f32>, wp: vec4<f32>, p: vec2<f32>) -> f32 {
     return mix(mix(a, b, f.x), mix(d, e, f.x), f.y);
 }
 
-// Wake slope (∂h/∂x, ∂h/∂z) by central differences.
+// Height of one cell (by world cell index), flat outside the window.
+fn wake_cell(map: texture_2d<f32>, wp: vec4<f32>, cell: vec2<f32>) -> f32 {
+    let rel = cell - wp.xy;
+    if (any(rel < vec2<f32>(0.0)) || any(rel > vec2<f32>(wp.w - 1.0))) {
+        return 0.0;
+    }
+    return textureLoad(map, wake_texel(cell, wp.w), 0).r;
+}
+
+// Wake slope (∂h/∂x, ∂h/∂z): central-difference gradients at the four surrounding cell
+// centres, interpolated bilinearly — smooth, where differencing the bilinear height would be
+// constant per cell and shade the wake in facets.
 fn wake_slope(map: texture_2d<f32>, wp: vec4<f32>, p: vec2<f32>) -> vec2<f32> {
-    let e = wp.z;
-    return vec2<f32>(
-        wake_height(map, wp, p + vec2<f32>(e, 0.0)) - wake_height(map, wp, p - vec2<f32>(e, 0.0)),
-        wake_height(map, wp, p + vec2<f32>(0.0, e)) - wake_height(map, wp, p - vec2<f32>(0.0, e)),
-    ) / (2.0 * e);
+    if (wp.w < 1.0) {
+        return vec2<f32>(0.0);
+    }
+    let c = p / wp.z - 0.5;
+    let i = floor(c);
+    let f = c - i;
+    var g: array<vec2<f32>, 4>;
+    for (var k = 0; k < 4; k++) {
+        let o = i + vec2<f32>(f32(k & 1), f32(k >> 1));
+        g[k] = vec2<f32>(
+            wake_cell(map, wp, o + vec2<f32>(1.0, 0.0)) - wake_cell(map, wp, o - vec2<f32>(1.0, 0.0)),
+            wake_cell(map, wp, o + vec2<f32>(0.0, 1.0)) - wake_cell(map, wp, o - vec2<f32>(0.0, 1.0)),
+        ) / (2.0 * wp.z);
+    }
+    return mix(mix(g[0], g[1], f.x), mix(g[2], g[3], f.x), f.y);
 }

@@ -32,19 +32,49 @@ fn value_noise(p: vec2<f32>) -> f32 {
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
-// Thick fresh foam reads as solid white; as it decays it breaks into lace and streaks
-// stretched along the wind.
+// Cellular noise: distance to the nearest and second-nearest feature point (F1, F2).
+fn worley(p: vec2<f32>) -> vec2<f32> {
+    let i = floor(p);
+    let f = fract(p);
+    var d1 = 8.0;
+    var d2 = 8.0;
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            let c = vec2<f32>(f32(x), f32(y));
+            let o = vec2<f32>(hash2(i + c), hash2(i + c + vec2<f32>(19.1, 7.3)));
+            let d = length(c + o - f);
+            if (d < d1) {
+                d2 = d1;
+                d1 = d;
+            } else if (d < d2) {
+                d2 = d;
+            }
+        }
+    }
+    return vec2<f32>(d1, d2);
+}
+
+// Foam bubble network: bright walls where two cells meet, holes in the middle.
+fn foam_cells(p: vec2<f32>) -> f32 {
+    let w = worley(p);
+    // Soft, uneven walls: real foam networks are blotchy, not drawn in lines.
+    return (1.0 - smoothstep(0.0, 0.45, w.y - w.x)) * (0.6 + 0.4 * value_noise(p * 0.7));
+}
+
+// Thick fresh foam reads as solid white; as it decays it opens into a network of bubble walls
+// (cellular, at two scales) streaked along the wind, then thins to lace.
 fn foam_coverage(foam: f32, p: vec2<f32>, footprint: f32) -> f32 {
     let a = frame.misc.w;
     let along = vec2<f32>(sin(a), cos(a));
     let q = vec2<f32>(dot(p, vec2<f32>(along.y, -along.x)), dot(p, along));
     let streak = value_noise(q * vec2<f32>(0.8, 0.18));
-    let lace = value_noise(q * 4.1 + 17.0) * 0.6 + value_noise(q * 11.3 + 5.0) * 0.4;
+    let cells = foam_cells(q * vec2<f32>(0.9, 0.6)) * 0.6 + foam_cells(q * 2.3 + 11.0) * 0.4;
+    let mottle = value_noise(q * 0.35 + 3.0);
     // Far away the pattern is sub-pixel: use its average instead of aliasing.
-    let detail = mix(0.55 * streak + 0.45 * lace, 0.5, smoothstep(0.1, 0.6, footprint));
+    let detail = mix(0.4 * streak + 0.3 * cells + 0.3 * mottle, 0.45, smoothstep(0.08, 0.5, footprint));
     // The foam texture has 0.5 m texels and no mips: fade it before it aliases into specks.
     let distance_fade = 1.0 - smoothstep(0.75, 3.0, footprint);
-    return clamp(foam * 2.5 - (1.0 - detail) * 1.2, 0.0, 1.0) * distance_fade;
+    return smoothstep(0.0, 1.0, clamp(foam * 2.2 - (1.0 - detail) * 1.1, 0.0, 1.0)) * distance_fade;
 }
 
 // The surf line: a band of foam along the beach where the water is under ~1.5 m deep,

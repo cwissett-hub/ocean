@@ -155,7 +155,7 @@ pub fn window_origin(focus: Vec2) -> IVec2 {
 }
 
 /// Pressure head under the hull, m (about the logs' draft) and the hull's half beam / length.
-pub const HULL_PRESSURE_M: f32 = 0.35;
+pub const HULL_PRESSURE_M: f32 = 0.2;
 pub const HULL_HALF_SIZE: Vec2 = Vec2::new(1.25, 1.55);
 const STEP_S: f32 = 1.0 / 60.0;
 const MAX_STEPS_PER_FRAME: u32 = 4;

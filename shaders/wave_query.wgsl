@@ -1,3 +1,4 @@
+// #include seabed_common.wgsl
 // Water height and normal at arbitrary world points (mirrors waves::query::invert_horizontal).
 // Samples the same displacement textures the renderer draws.
 
@@ -7,6 +8,7 @@ struct QueryParams {
     _pad1: u32,
     _pad2: u32,
     sizes: vec4<f32>,
+    seabed: vec4<f32>,
 };
 
 @group(0) @binding(0) var displacement: texture_2d_array<f32>;
@@ -15,6 +17,7 @@ struct QueryParams {
 @group(0) @binding(3) var<storage, read> points: array<vec2<f32>>;
 @group(0) @binding(4) var<storage, read_write> results: array<vec4<f32>>;
 @group(0) @binding(5) var<uniform> qp: QueryParams;
+@group(0) @binding(6) var seabed: texture_2d<f32>;
 
 // The sub-metre cascade only makes ripples; nothing that floats feels it.
 const QUERY_CASCADES: u32 = 3u;
@@ -30,7 +33,8 @@ fn disp(p: vec2<f32>) -> vec3<f32> {
     for (var c = 0u; c < QUERY_CASCADES; c++) {
         d += textureSampleLevel(displacement, samp, uv(p, c), c, 0.0).xyz;
     }
-    return d;
+    // Waves fade out in the shallows exactly as the rendered surface does.
+    return d * wave_attenuation(-seabed_height(seabed, qp.seabed, p));
 }
 
 @compute @workgroup_size(64, 1, 1)
@@ -47,6 +51,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     for (var c = 0u; c < QUERY_CASCADES; c++) {
         der += textureSampleLevel(derivatives, samp, uv(x, c), c, 0.0);
     }
+    der *= wave_attenuation(-seabed_height(seabed, qp.seabed, x));
     let n = normalize(vec3<f32>(-der.x / max(1.0 + der.z, 0.2), 1.0, -der.y / max(1.0 + der.w, 0.2)));
     results[id.x] = vec4<f32>(disp(x).y, n);
 }

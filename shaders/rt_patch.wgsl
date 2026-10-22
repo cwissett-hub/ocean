@@ -1,3 +1,4 @@
+// #include seabed_common.wgsl
 // Writes the displaced near-field wave patch the ray-tracing BLAS is built from: a
 // (grid+1)² vertex grid of world positions, sampled exactly like the render mesh.
 
@@ -7,12 +8,14 @@ struct PatchParams {
     grid: u32,
     sizes: vec4<f32>,
     lambda_min: vec4<f32>,
+    seabed: vec4<f32>,
 };
 
 @group(0) @binding(0) var displacement: texture_2d_array<f32>;
 @group(0) @binding(1) var samp: sampler;
 @group(0) @binding(2) var<storage, read_write> verts: array<f32>;
 @group(0) @binding(3) var<uniform> pp: PatchParams;
+@group(0) @binding(4) var seabed: texture_2d<f32>;
 
 const N: f32 = 256.0;
 
@@ -34,6 +37,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             d += w * textureSampleLevel(displacement, samp, p / pp.sizes[c] + vec2<f32>(0.5 / N), c, 0.0).xyz;
         }
     }
+    d *= wave_attenuation(-seabed_height(seabed, pp.seabed, p));
     let i = (id.y * (pp.grid + 1u) + id.x) * 3u;
     verts[i] = p.x + d.x;
     verts[i + 1u] = d.y;

@@ -54,7 +54,8 @@ fn query_matches_rendered_surface() {
     let points: Vec<Vec2> = (0..32)
         .map(|i| Vec2::new(i as f32 * 13.7 - 200.0, (i * i) as f32 * 0.91 - 150.0))
         .collect();
-    let mut query = WaveQuery::new(&ctx, &lib, &gpu);
+    let map = ocean::render::seabed::SeabedMap::new(&ctx.device);
+    let mut query = WaveQuery::new(&ctx, &lib, &gpu, &map);
     let got = query.read_blocking(&ctx, &points);
     assert_eq!(got.len(), points.len());
     let mut worst = 0.0f32;
@@ -65,4 +66,68 @@ fn query_matches_rendered_surface() {
         assert!((n.length() - 1.0).abs() < 1e-3 && n.y > 0.3, "normal {n}");
     }
     assert!(worst < 0.01, "worst height error {worst} m");
+}
+
+#[test]
+fn query_attenuates_like_the_surface() {
+    use glam::DVec2;
+    use ocean::render::seabed::{SEABED_RES, SEABED_TEXEL_M, SeabedMap, texel_center};
+    use ocean::world::islands::wave_attenuation;
+    use ocean::world::origin::WorldOrigin;
+
+    let ctx = GpuContext::new_headless().expect("gpu");
+    let lib = ShaderLibrary::embedded();
+    let p = OceanParams {
+        wind_speed: 9.0,
+        ..Default::default()
+    };
+    let spectrum = build_spectrum(&p, 42);
+    let t = 5.3;
+    let mut gpu = GpuOcean::new(&ctx, &lib, &spectrum);
+    let mut enc = ctx.device.create_command_encoder(&Default::default());
+    gpu.update(&mut enc, t, p.choppiness, foam_params(&p), 0.0);
+    ctx.queue.submit([enc.finish()]);
+
+    // Open sea 25 m deep with a 1 m-deep shoal 400 m square around the origin.
+    let corner = DVec2::splat(-(SEABED_RES as f64) * SEABED_TEXEL_M / 2.0);
+    let mut heights = vec![-25.0f32; SEABED_RES * SEABED_RES];
+    for j in 0..SEABED_RES {
+        for i in 0..SEABED_RES {
+            if texel_center(corner, i, j).abs().max_element() < 200.0 {
+                heights[j * SEABED_RES + i] = -1.0;
+            }
+        }
+    }
+    let mut map = SeabedMap::new(&ctx.device);
+    map.upload(&ctx.queue, corner, &heights);
+    let sp = map.params(&WorldOrigin::default());
+
+    let points: Vec<Vec2> = (0..32)
+        .map(|i| Vec2::new(i as f32 * 5.7 - 90.0, (i * i) as f32 * 0.17 - 80.0))
+        .collect();
+    let mut query = WaveQuery::new(&ctx, &lib, &gpu, &map);
+    query.set_seabed(sp);
+    let shoal = query.read_blocking(&ctx, &points);
+    query.set_seabed([0.0; 4]);
+    let open = query.read_blocking(&ctx, &points);
+
+    let cpu = CpuOcean::new(&spectrum, p.choppiness);
+    let fields: Vec<_> = (0..QUERY_CASCADES).map(|c| cpu.evaluate(c, t)).collect();
+    let a = wave_attenuation(1.0);
+    let disp_at = |q: Vec2| {
+        let d = (0..QUERY_CASCADES)
+            .map(|c| sample(&fields[c], c, q))
+            .fold(Vec3::ZERO, |a, b| a + b);
+        d * if q.abs().max_element() < 200.0 { a } else { 1.0 }
+    };
+    let mut compared = 0;
+    for (q, ((hs, _), (ho, _))) in points.iter().zip(shoal.iter().zip(&open)) {
+        let want = disp_at(invert_horizontal(*q, disp_at)).y;
+        assert!((hs - want).abs() < 0.01, "shoal height {hs} vs cpu {want} at {q}");
+        if ho.abs() > 0.05 {
+            compared += 1;
+            assert!(hs.abs() <= 0.15 * ho.abs(), "shoal {hs} vs open {ho} at {q}");
+        }
+    }
+    assert!(compared >= 8, "only {compared} points had waves to compare");
 }

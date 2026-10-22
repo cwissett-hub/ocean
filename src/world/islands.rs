@@ -158,6 +158,14 @@ pub fn sea_floor(seed: u64, world: DVec2) -> f32 {
     (-(SEA_DEPTH_M as f64) + n) as f32
 }
 
+/// How much of the open-sea wave displacement survives over water `depth` metres deep (the
+/// shaders' `wave_attenuation` in seabed_common.wgsl is the same formula): waves die out over
+/// the last 10 m to the shore and never ride up onto dry land.
+pub fn wave_attenuation(depth: f32) -> f32 {
+    let t = (depth / 10.0).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// Seabed (or island ground) height at a world point.
 pub fn seabed_height(seed: u64, islands: &[IslandDesc], world: DVec2) -> f32 {
     islands
@@ -186,6 +194,25 @@ mod tests {
 
     fn centroid(s: &[IslandDesc]) -> DVec2 {
         s.iter().map(|d| d.center).sum::<DVec2>() / s.len() as f64
+    }
+
+    #[test]
+    fn attenuation_is_monotonic_and_bounded() {
+        assert_eq!(wave_attenuation(-3.0), 0.0, "no waves over dry land");
+        assert_eq!(wave_attenuation(0.0), 0.0);
+        assert_eq!(wave_attenuation(10.0), 1.0);
+        assert_eq!(wave_attenuation(SEA_DEPTH_M), 1.0, "open sea is untouched");
+        assert!(wave_attenuation(1.0) < 0.05, "a 1 m shoal all but stops waves");
+        let mut prev = 0.0;
+        for i in 0..=200 {
+            let a = wave_attenuation(i as f32 * 0.06);
+            assert!(
+                (0.0..=1.0).contains(&a) && a >= prev,
+                "depth {} -> {a}",
+                i as f32 * 0.06
+            );
+            prev = a;
+        }
     }
 
     #[test]

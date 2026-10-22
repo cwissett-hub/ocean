@@ -48,6 +48,7 @@ const EMBEDDED: &[(&str, &str)] = &[
     ("particles_draw", include_str!("../../shaders/particles_draw.wgsl")),
     ("materials", include_str!("../../shaders/materials.wgsl")),
     ("frame_common", include_str!("../../shaders/frame_common.wgsl")),
+    ("seabed_common", include_str!("../../shaders/seabed_common.wgsl")),
     ("sky_common", include_str!("../../shaders/sky_common.wgsl")),
     ("sky_sample", include_str!("../../shaders/sky_sample.wgsl")),
 ];

@@ -124,6 +124,7 @@ const UNIFORM: wgpu::BindingType = wgpu::BindingType::Buffer {
 };
 
 impl ParticleSystem {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         d: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -132,6 +133,7 @@ impl ParticleSystem {
         ocean: &crate::waves::gpu_ocean::GpuOcean,
         sky: &crate::render::sky::SkyLuts,
         g: &crate::render::gbuffer::GBuffer,
+        seabed: &crate::render::seabed::SeabedMap,
     ) -> ParticleSystem {
         let buffer = |label, size, usage| {
             d.create_buffer(&wgpu::BufferDescriptor {
@@ -168,6 +170,15 @@ impl ParticleSystem {
                 layout_entry(6, cs, storage(false)),
                 layout_entry(7, cs, UNIFORM),
                 layout_entry(8, cs, storage(true)),
+                layout_entry(
+                    9,
+                    cs,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
             ],
         });
         let sampler = d.create_sampler(&wgpu::SamplerDescriptor {
@@ -218,6 +229,10 @@ impl ParticleSystem {
                 wgpu::BindGroupEntry {
                     binding: 8,
                     resource: requests_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: B::TextureView(seabed.view()),
                 },
             ],
         });

@@ -25,9 +25,23 @@ const SWELL_DIR_OFFSET_DEG: f32 = 20.0;
 const SWELL_HS_AT_FULL_M: f32 = 1.0;
 const GAMMA: f64 = 3.3;
 
-/// Deep-water dispersion ω(k) = √(g·k).
+/// Mean depth of the sea the waves run in (world::islands::SEA_DEPTH_M).
+const DEPTH_M: f64 = crate::world::islands::SEA_DEPTH_M as f64;
+
+/// Finite-depth dispersion ω(k) = √(g·k·tanh(k·h)).
 pub fn dispersion(k: f32) -> f32 {
-    (G * k).sqrt()
+    dispersion64(k as f64) as f32
+}
+
+fn dispersion64(k: f64) -> f64 {
+    (G as f64 * k * (k * DEPTH_M).tanh()).sqrt()
+}
+
+/// dω/dk of `dispersion64`.
+fn dispersion_slope(k: f64) -> f64 {
+    let (g, kh) = (G as f64, k * DEPTH_M);
+    let sech = 1.0 / kh.cosh();
+    g * (kh.tanh() + kh * sech * sech) / (2.0 * dispersion64(k))
 }
 
 /// ω(k) rounded down to a multiple of 2π / REPEAT_PERIOD_S.
@@ -165,13 +179,11 @@ impl Component {
         if k == 0.0 || self.alpha == 0.0 {
             return 0.0;
         }
-        let g = G as f64;
-        let omega = (g * k).sqrt();
+        let omega = dispersion64(k);
         let mut theta = kx.atan2(kz) - self.dir;
         theta = (theta + PI64).rem_euclid(TAU64) - PI64;
         let d = self.norm * (theta / 2.0).cos().abs().powf(2.0 * self.spread as f64);
-        let domega_dk = g / (2.0 * omega);
-        jonswap_shape(omega, self.omega_p, self.alpha) * d * domega_dk / k
+        jonswap_shape(omega, self.omega_p, self.alpha) * d * dispersion_slope(k) / k
     }
 }
 
@@ -258,6 +270,12 @@ pub(crate) mod tests {
     #[test]
     fn dispersion_deep_water() {
         assert!((dispersion(1.0) - 3.1321).abs() < 1e-3);
+    }
+
+    #[test]
+    fn dispersion_slows_long_waves_in_the_shallow_sea() {
+        // ω² = g·k·tanh(k·h) with h = 25 m: a 125 m wave (k 0.05) runs ~8 % slower.
+        assert!((dispersion(0.05) - 0.64504).abs() < 1e-4, "{}", dispersion(0.05));
     }
 
     #[test]

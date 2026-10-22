@@ -66,6 +66,7 @@ struct PatchParams {
     grid: u32,
     sizes: [f32; 4],
     lambda_min: [f32; 4],
+    seabed: [f32; 4],
 }
 
 pub struct RtScene {
@@ -115,6 +116,7 @@ impl RtScene {
         ocean: &GpuOcean,
         buoy: (&wgpu::Buffer, &wgpu::Buffer, u32),
         buoy_vertices: u32,
+        seabed: &crate::render::seabed::SeabedMap,
         cfg: RtPatchConfig,
     ) -> RtScene {
         let d = &ctx.device;
@@ -176,6 +178,10 @@ impl RtScene {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(seabed.view()),
                 },
             ],
         });
@@ -260,6 +266,7 @@ impl RtScene {
         origin: Vec2,
         buoy: Mat4,
         buoy_geometry: (&wgpu::Buffer, &wgpu::Buffer),
+        seabed: [f32; 4],
     ) {
         let p = PatchParams {
             origin: origin.to_array(),
@@ -267,6 +274,7 @@ impl RtScene {
             grid: self.cfg.grid,
             sizes: CASCADE_SIZES_M,
             lambda_min: std::array::from_fn(|c| std::f32::consts::TAU / cascade_band(c).1),
+            seabed,
         };
         self.queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&p));
         {

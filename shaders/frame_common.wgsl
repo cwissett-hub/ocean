@@ -13,6 +13,7 @@ struct Frame {
     slope_var: vec4<f32>,   // mean-square slope of each cascade
     misc: vec4<f32>,        // unresolved slope variance, significant wave height m, exposure, wind direction rad
     resolution: vec4<f32>,  // w, h, 1/w, 1/h of the internal render targets
+    seabed: vec4<f32>,      // seabed map: local corner x, z, texel m, resolution (seabed_common.wgsl)
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;

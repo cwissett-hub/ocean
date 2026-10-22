@@ -1,4 +1,5 @@
 // #include frame_common.wgsl
+// #include seabed_common.wgsl
 // Spray and mist simulation. Entry points: clear_deposits, emit (crest spray + mist), spawn
 // (CPU SpawnRequests), update (physics; landing spray deposits foam for the next frame).
 
@@ -41,6 +42,12 @@ struct SimParams {
 @group(0) @binding(6) var<storage, read_write> deposits: array<atomic<u32>>;
 @group(0) @binding(7) var<uniform> sp: SimParams;
 @group(0) @binding(8) var<storage, read> requests: array<SpawnRequest>;
+@group(0) @binding(9) var seabed: texture_2d<f32>;
+
+// Waves (and so crest spray) fade out over the shallows like the rendered surface.
+fn shallows(p: vec2<f32>) -> f32 {
+    return wave_attenuation(-seabed_height(seabed, frame.seabed, p));
+}
 
 const MAX_PARTICLES: u32 = 65536u;
 const DEPOSIT_RES: u32 = 512u;
@@ -63,7 +70,7 @@ fn disp(p: vec2<f32>) -> vec3<f32> {
     for (var c = 0u; c < FOAM_CASCADES; c++) {
         d += textureSampleLevel(displacement, samp, cascade_uv(p, c), c, 0.0).xyz;
     }
-    return d;
+    return d * shallows(p);
 }
 
 fn jacobian(p: vec2<f32>) -> f32 {
@@ -73,6 +80,7 @@ fn jacobian(p: vec2<f32>) -> f32 {
         let jxz = textureSampleLevel(displacement, samp, cascade_uv(p, c), c, 0.0).w;
         d += vec3<f32>(der.z, der.w, jxz);
     }
+    d *= shallows(p);
     return (1.0 + d.x) * (1.0 + d.y) - d.z * d.z;
 }
 
@@ -166,7 +174,8 @@ fn update(@builtin(global_invocation_id) id: vec3<u32>) {
         // Droplet clumps are dragged towards the wind velocity.
         q.vel += (wind - q.vel) * (1.0 - exp(-dt * 0.9));
         q.pos += q.vel * dt;
-        let water = disp(q.pos.xz).y;
+        // Spray lands on the water, or on the beach where that is higher.
+        let water = max(disp(q.pos.xz).y, seabed_height(seabed, frame.seabed, q.pos.xz));
         if (q.vel.y < 0.0 && q.pos.y < water) {
             // Landed: leave foam where it fell, for the foam pass next frame.
             let cell = vec2<i32>(floor(q.pos.xz / DEPOSIT_CELL_M));

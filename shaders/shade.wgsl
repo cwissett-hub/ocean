@@ -3,6 +3,7 @@
 // #include sky_sample.wgsl
 // #include materials.wgsl
 // #include surfaces.wgsl
+// #include seabed_common.wgsl
 // Full-screen composite into the HDR target: sky where nothing was drawn, physically based
 // water elsewhere. Needs frame_common.wgsl, sky_common.wgsl, sky_sample.wgsl.
 
@@ -13,6 +14,7 @@
 @group(0) @binding(5) var lin: sampler;
 @group(0) @binding(6) var opaque_depth: texture_depth_2d;
 @group(0) @binding(7) var opaque_albedo: texture_2d<f32>;
+@group(0) @binding(8) var seabed: texture_2d<f32>;
 
 
 struct VsOut {
@@ -58,24 +60,37 @@ fn shade_water(px: vec2<f32>, p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam
         spec = e_sun * ggx(max(dot(n, h), 0.0), alpha2) * g * fresnel(dot(v, h)) / (4.0 * n_v);
     }
 
-    // Light scattered back up out of the deep water column (single scattering, deep water).
+    // Light scattered back up out of the water column (single scattering, infinitely deep).
     let albedo = WATER_SCATTER / (WATER_ABSORB + WATER_SCATTER);
     let e_in = e_sun * max(sun.y, 0.0) * (1.0 - fresnel(max(sun.y, 0.0))) + sky_irradiance() * 0.94;
-    var body = (1.0 - f) * e_in * albedo / (4.0 * PI) * 1.3;
+    let column = e_in * albedo / (4.0 * PI) * 1.3;
 
-    // Refraction: anything opaque under this bit of surface (the buoy's hull) shows through,
-    // dimmed and tinted by the water it is seen through. Screen-space offset by the normal.
+    // The bottom: the sandy seabed where the refracted view ray meets it (one step along the
+    // ray from the depth straight below), unless the opaque pass drew something nearer under
+    // this bit of surface (a raft log, the buoy's hull, an island's beach), screen-space
+    // offset by the normal. Light reaches it down through the water and comes back up along
+    // the view ray, so the shallows go from sand through turquoise to the deep blue.
+    let ext = WATER_ABSORB + WATER_SCATTER;
+    let down = refract(-v, n, 1.0 / 1.333);
+    let cos_down = max(-down.y, 0.15);
+    let below = max(p.y - seabed_height(seabed, frame.seabed, p.xz), 0.0);
+    let bed_xz = p.xz + down.xz * (below / cos_down);
+    var depth = max(p.y - seabed_height(seabed, frame.seabed, bed_xz), 0.0);
+    var view_path = depth / cos_down;
+    var bottom = material_albedo(MAT_SAND, 0.0);
     let rp = clamp(px + n.xz * (40.0 / max(dist, 1.0)) * frame.resolution.x / 1280.0, vec2<f32>(0.0), frame.resolution.xy - 1.0);
     let od = textureLoad(opaque_depth, vec2<i32>(rp), 0);
     if (od > 0.0) {
         let q = world_from_depth(rp, od);
-        let path = length(q - p);
-        if (q.y < p.y && length(q - frame.cam_pos.xyz) > dist) {
-            let t = exp(-(WATER_ABSORB + WATER_SCATTER) * path);
-            let lit = textureLoad(opaque_albedo, vec2<i32>(rp), 0).rgb / PI * e_in * t;
-            body = (1.0 - f) * lit + body * (vec3<f32>(1.0) - t);
+        if (q.y < p.y && length(q - frame.cam_pos.xyz) > dist && length(q - p) < view_path + 1.0) {
+            bottom = textureLoad(opaque_albedo, vec2<i32>(rp), 0).rgb;
+            depth = p.y - q.y;
+            view_path = length(q - p);
         }
     }
+    let seen = exp(-ext * view_path);
+    let bottom_lit = bottom / PI * e_in * exp(-ext * depth) * seen;
+    let body = (1.0 - f) * (bottom_lit + column * (vec3<f32>(1.0) - seen));
 
     // Sunlight through thin wave crests toward the eye: the green-gold glow when looking
     // into a low sun.

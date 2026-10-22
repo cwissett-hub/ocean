@@ -16,6 +16,7 @@ use crate::render::particles::{ParticleInputs, ParticleSystem};
 use crate::render::post::{Post, exposure_ev, exposure_multiplier};
 use crate::render::reflect::ReflectionPass;
 use crate::render::rt_scene::{RtPatchConfig, RtScene, patch_origin};
+use crate::render::seabed::SeabedMap;
 use crate::render::shade::ShadePass;
 use crate::render::sky::{SkyLuts, sun_direction};
 use crate::scene::buoy::{BuoyBody, build_buoy_mesh};
@@ -61,6 +62,8 @@ struct FrameUniforms {
     slope_var: [f32; 4],
     misc: [f32; 4],
     resolution: [f32; 4],
+    /// SeabedMap::params.
+    seabed: [f32; 4],
 }
 
 /// The parameters that change the wave spectrum (rebuilding it costs a few milliseconds).
@@ -133,6 +136,7 @@ pub struct Renderer {
     raft_mesh: MeshHandle,
     buoy_body: BuoyBody,
     raft: RaftBody,
+    seabed: SeabedMap,
     query: WaveQuery,
     /// Latest water samples (raft 9, buoy 5, camera 1) and the heights/time they came from.
     water: Option<[WaterSample; QUERY_POINTS]>,
@@ -179,6 +183,7 @@ impl Renderer {
         let ocean = GpuOcean::new(ctx, lib, &spectrum);
         let sky = SkyLuts::new(ctx, lib);
         let mesh = OceanMesh::new(d);
+        let seabed = SeabedMap::new(d);
         let uniforms = d.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame uniforms"),
             size: std::mem::size_of::<FrameUniforms>() as u64,
@@ -235,6 +240,16 @@ impl Renderer {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: vis,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         use wgpu::BindingResource as B;
@@ -262,6 +277,10 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 4,
                         resource: B::TextureView(&ocean.foam_views()[i]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: B::TextureView(seabed.view()),
                     },
                 ],
             })
@@ -311,20 +330,28 @@ impl Renderer {
         });
         let gbuffer = GBuffer::new(d, internal_extent(surface_extent, params.render_scale));
         let reflections = ReflectionPass::new(d, lib, &ctx.queue, &uniforms, &gbuffer);
-        let particles = ParticleSystem::new(d, &ctx.queue, lib, &uniforms, &ocean, &sky, &gbuffer);
-        let shade = ShadePass::new(d, lib, &uniforms, &sky, &gbuffer, reflections.views());
+        let particles = ParticleSystem::new(d, &ctx.queue, lib, &uniforms, &ocean, &sky, &gbuffer, &seabed);
+        let shade = ShadePass::new(d, lib, &uniforms, &sky, &gbuffer, reflections.views(), seabed.view());
         let post = Post::new(d, lib, format, &gbuffer);
         let mut objects = ObjectPass::new(d, &ctx.queue, lib, &layout);
         let buoy_mesh = objects.add_mesh(d, &build_buoy_mesh());
         let raft_mesh = objects.add_mesh(d, &build_raft_mesh());
         let palm_mesh = objects.add_mesh(d, &palm_mesh());
-        let query = WaveQuery::new(ctx, lib, &ocean);
+        let query = WaveQuery::new(ctx, lib, &ocean, &seabed);
         let raft = raft_start();
         let cameras = CameraController::new(&raft);
         let mut reflections = reflections;
         let rt = ctx.rt_available.then(|| {
             let (vb, ib, indices, vertices) = objects.mesh_geometry(buoy_mesh).expect("buoy mesh");
-            let scene = RtScene::new(ctx, lib, &ocean, (vb, ib, indices), vertices, RtPatchConfig::default());
+            let scene = RtScene::new(
+                ctx,
+                lib,
+                &ocean,
+                (vb, ib, indices),
+                vertices,
+                &seabed,
+                RtPatchConfig::default(),
+            );
             reflections.enable_rt(d, lib, &sky, &uniforms, &gbuffer, &scene);
             scene
         });
@@ -341,6 +368,7 @@ impl Renderer {
             ready: std::collections::VecDeque::new(),
             buoy_body: BuoyBody::at(BUOY_HOME),
             raft,
+            seabed,
             query,
             water: None,
             last_heights: None,
@@ -467,6 +495,9 @@ impl Renderer {
             .origin
             .to_world(Vec2::new(self.raft.position.x, self.raft.position.z));
         self.streamer.update(focus);
+        self.seabed
+            .update(&self.queue, WORLD_SEED, focus, self.streamer.known());
+        self.query.set_seabed(self.seabed.params(&self.origin));
         for id in self.streamer.take_unloads() {
             if let Some(isle) = self.islands.remove(&id) {
                 self.objects.remove_mesh(isle.mesh);
@@ -566,6 +597,7 @@ impl Renderer {
                 params.wind_dir_deg.to_radians(),
             ],
             resolution: [w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32],
+            seabed: self.seabed.params(&self.origin),
         };
         self.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
 
@@ -583,7 +615,13 @@ impl Renderer {
         if let Some(rt) = &mut self.rt {
             let origin = patch_origin(cam.position, cam.forward, &rt.config());
             if let Some((vb, ib, _, _)) = self.objects.mesh_geometry(self.buoy_mesh) {
-                rt.record(&mut enc, origin, self.buoy_body.transform(), (vb, ib));
+                rt.record(
+                    &mut enc,
+                    origin,
+                    self.buoy_body.transform(),
+                    (vb, ib),
+                    self.seabed.params(&self.origin),
+                );
             }
         }
         self.timer.mark(&mut enc, "rt build");

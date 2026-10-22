@@ -9,6 +9,7 @@ use glam::{Vec2, Vec3};
 
 use crate::gpu::adapter::GpuContext;
 use crate::gpu::shaders::ShaderLibrary;
+use crate::render::seabed::SeabedMap;
 use crate::waves::gpu_ocean::GpuOcean;
 use crate::waves::spectrum::CASCADE_SIZES_M;
 
@@ -44,6 +45,7 @@ struct QueryParams {
     count: u32,
     _pad: [u32; 3],
     sizes: [f32; 4],
+    seabed: [f32; 4],
 }
 
 const IDLE: u8 = 0;
@@ -67,6 +69,8 @@ pub struct WaveQuery {
     params: wgpu::Buffer,
     slots: Vec<Slot>,
     requested: Vec<Vec2>,
+    /// SeabedMap::params for the frame (waves fade out in the shallows).
+    seabed: [f32; 4],
     recorded: Option<usize>,
     next: usize,
 }
@@ -74,7 +78,7 @@ pub struct WaveQuery {
 const RESULT_BYTES: u64 = (MAX_QUERY_POINTS * 16) as u64;
 
 impl WaveQuery {
-    pub fn new(ctx: &GpuContext, lib: &ShaderLibrary, ocean: &GpuOcean) -> WaveQuery {
+    pub fn new(ctx: &GpuContext, lib: &ShaderLibrary, ocean: &GpuOcean, seabed: &SeabedMap) -> WaveQuery {
         let d = &ctx.device;
         let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("wave_query"),
@@ -141,6 +145,10 @@ impl WaveQuery {
                     binding: 5,
                     resource: params.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: B::TextureView(seabed.view()),
+                },
             ],
         });
         let slots = (0..SLOTS)
@@ -159,6 +167,7 @@ impl WaveQuery {
             params,
             slots,
             requested: Vec::new(),
+            seabed: [0.0; 4],
             recorded: None,
             next: 0,
         }
@@ -167,6 +176,10 @@ impl WaveQuery {
     /// Points (world xz) to evaluate in the next `record`; at most MAX_QUERY_POINTS are used.
     pub fn request(&mut self, points: &[Vec2]) {
         self.requested = points.iter().take(MAX_QUERY_POINTS).copied().collect();
+    }
+
+    pub fn set_seabed(&mut self, params: [f32; 4]) {
+        self.seabed = params;
     }
 
     /// Records the query after this frame's wave update. Skipped when every readback slot is
@@ -184,6 +197,7 @@ impl WaveQuery {
             count: n as u32,
             _pad: [0; 3],
             sizes: CASCADE_SIZES_M,
+            seabed: self.seabed,
         };
         self.queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&p));
         {

@@ -294,7 +294,7 @@ mod tests {
     fn seabed_is_the_highest_of_floor_and_islands() {
         let d = start_island(WORLD_SEED);
         assert_eq!(
-            seabed_height(WORLD_SEED, &[d.clone()], d.center),
+            seabed_height(WORLD_SEED, std::slice::from_ref(&d), d.center),
             island_height(&d, d.center)
         );
         let far = d.center + DVec2::new(5000.0, 0.0);

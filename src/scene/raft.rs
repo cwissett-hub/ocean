@@ -4,7 +4,7 @@
 
 use glam::{Mat4, Quat, Vec2, Vec3};
 
-use crate::render::particles::{KIND_FOAM_MARK, KIND_SPRAY, SpawnRequest};
+use crate::render::particles::{KIND_SPRAY, SpawnRequest};
 use crate::waves::query::WaterSample;
 use crate::waves::spectrum::G;
 
@@ -307,13 +307,6 @@ impl RaftBody {
     }
 }
 
-/// Foam marks laid across the stern every WAKE_SPACING_M sailed.
-pub const WAKE_LANES: usize = 3;
-const WAKE_SPACING_M: f32 = 0.5;
-const WAKE_LANE_M: f32 = 1.0;
-/// A step that sails further than this only marks its last stretch.
-const WAKE_MAX_MARKS: i64 = 32;
-const STERN_M: f32 = 1.6;
 /// The bow throws spray when it slams down into the water while under way.
 const SPRAY_MIN_SPEED: f32 = 0.6;
 const SPRAY_MIN_PLUNGE: f32 = 0.4;
@@ -322,8 +315,8 @@ const SPRAY_RATE: f32 = 40.0;
 const SPRAY_MAX_PER_POINT: u32 = 2048;
 const BOW_POINTS: [usize; 3] = [6, 7, 8];
 
-/// What the raft throws into the particle system after a `step` of `dt`: wake foam marks
-/// (first, so a spray burst never starves the wake when requests are packed) and bow spray.
+/// What the raft throws into the particle system after a `step` of `dt`: bow spray. (Its wake
+/// and the foam the wake breaks into come from the wake simulation, render::wake.)
 pub fn raft_emissions(body: &RaftBody, water: &[WaterSample; 9], dt: f32) -> Vec<SpawnRequest> {
     let mut out = Vec::new();
     if !(dt.is_finite() && dt > 0.0) {
@@ -331,23 +324,6 @@ pub fn raft_emissions(body: &RaftBody, water: &[WaterSample; 9], dt: f32) -> Vec
     }
     let fwd = body.forward();
     let side = Vec3::new(fwd.z, 0.0, -fwd.x);
-    let before = body.travelled - body.last_step_travel;
-    let last = (body.travelled / WAKE_SPACING_M).floor() as i64;
-    let first = ((before / WAKE_SPACING_M).floor() as i64 + 1).max(last - WAKE_MAX_MARKS + 1);
-    for k in first..=last {
-        // The stern passed mark k this far back along the track.
-        let back = body.travelled - k as f32 * WAKE_SPACING_M;
-        let stern = body.position - fwd * (STERN_M + back);
-        for lane in 0..WAKE_LANES {
-            let x = (lane as f32 - (WAKE_LANES as f32 - 1.0) / 2.0) * WAKE_LANE_M;
-            out.push(SpawnRequest {
-                position: (stern + side * x).to_array(),
-                kind: KIND_FOAM_MARK,
-                velocity: [0.0; 3],
-                count: 1,
-            });
-        }
-    }
     let speed = body.velocity.dot(fwd);
     if speed <= SPRAY_MIN_SPEED {
         return out;
@@ -728,7 +704,9 @@ mod tests {
     }
 
     fn marks(reqs: &[SpawnRequest]) -> usize {
-        reqs.iter().filter(|r| r.kind == KIND_FOAM_MARK).count()
+        reqs.iter()
+            .filter(|r| r.kind == crate::render::particles::KIND_FOAM_MARK)
+            .count()
     }
 
     fn moving(speed: f32, vy: f32) -> RaftBody {
@@ -768,30 +746,14 @@ mod tests {
     }
 
     #[test]
-    fn wake_marks_every_half_metre() {
+    fn raft_lays_no_foam_lanes_the_wake_simulation_makes_its_foam() {
+        // The straight three-lane foam marks doubled up with the simulated Kelvin wake.
         let mut r = RaftBody::at(Vec3::ZERO, 1.0);
         r.velocity = r.forward() * 2.0;
-        let mut total = 0;
         for _ in 0..(8.0 / DT) as usize {
             r.step(&flat(), Vec2::ZERO, &controls(1.0, 0.0, false), &deep, DT);
-            let reqs = raft_emissions(&r, &flat(), DT);
-            for m in reqs.iter().filter(|q| q.kind == KIND_FOAM_MARK) {
-                let p = Vec3::from(m.position);
-                let behind = (p - r.position).dot(r.forward());
-                assert!((-2.5..=-1.0).contains(&behind), "mark {behind} m along the hull");
-            }
-            total += marks(&reqs);
+            assert_eq!(marks(&raft_emissions(&r, &flat(), DT)), 0);
         }
-        let want = (r.travelled / 0.5).floor() as usize * WAKE_LANES;
-        assert!(r.travelled > 5.0, "travelled {}", r.travelled);
-        assert!(
-            total.abs_diff(want) <= WAKE_LANES,
-            "{total} marks over {} m",
-            r.travelled
-        );
-        // Standing still leaves no wake.
-        let still = RaftBody::at(Vec3::ZERO, 0.0);
-        assert_eq!(marks(&raft_emissions(&still, &flat(), DT)), 0);
     }
 
     #[test]
@@ -862,7 +824,5 @@ mod tests {
         assert!(wanted > REQUEST_BUDGET, "only {wanted} requested");
         let packed = pack_requests(&reqs, REQUEST_BUDGET);
         assert!(packed.iter().map(|q| q.count).sum::<u32>() <= REQUEST_BUDGET);
-        // Wake marks come first, so spray never starves the wake.
-        assert_eq!(marks(&packed), marks(&reqs));
     }
 }

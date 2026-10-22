@@ -1,5 +1,6 @@
 // #include frame_common.wgsl
 // #include seabed_common.wgsl
+// #include wake_common.wgsl
 // Ocean surface into the G-buffer: nested camera-centred grids displaced by the four FFT
 // cascades, calming over the shallows. Needs frame_common.wgsl, seabed_common.wgsl.
 
@@ -8,6 +9,7 @@
 @group(0) @binding(3) var samp: sampler;
 @group(0) @binding(4) var foam_tex: texture_2d<f32>;
 @group(0) @binding(5) var seabed: texture_2d<f32>;
+@group(0) @binding(6) var wake: texture_2d<f32>;
 
 fn water_depth(p: vec2<f32>) -> f32 {
     return -seabed_height(seabed, frame.seabed, p);
@@ -107,6 +109,8 @@ fn vs_ocean(@builtin(vertex_index) vi: u32, @builtin(instance_index) level: u32)
         d = mix(d, mid, m);
     }
     // The swell dies out over the last 10 m to the shore and never climbs the beach.
+    // The raft's own waves (bow wave, the dip along the hull, its Kelvin wake) ride on top.
+    d.y += wake_height(wake, frame.wake, p);
     d *= wave_attenuation(water_depth(p));
 
     var o: OceanOut;
@@ -155,7 +159,8 @@ fn fs_ocean(in: OceanOut) -> GBufferOut {
         variance += a * a * (1.0 - w) * frame.slope_var[c];
     }
     // Where a crest folds (1 + ∂D/∂x → 0) the normal would blow up; clamp the stretch.
-    let n = normalize(vec3<f32>(-der.x / max(1.0 + der.z, 0.2), 1.0, -der.y / max(1.0 + der.w, 0.2)));
+    let wake_s = att * wake_slope(wake, frame.wake, in.grid_xz);
+    let n = normalize(vec3<f32>(-der.x / max(1.0 + der.z, 0.2) - wake_s.x, 1.0, -der.y / max(1.0 + der.w, 0.2) - wake_s.y));
 
     let prev = frame.prev_view_proj * vec4<f32>(in.world, 1.0);
     let prev_px = (vec2<f32>(prev.x, -prev.y) / prev.w * 0.5 + 0.5) * frame.resolution.xy;
@@ -165,7 +170,11 @@ fn fs_ocean(in: OceanOut) -> GBufferOut {
     // Breaking-crest foam fades with the waves that make it (the foam texture tiles every
     // 1 km, so the shallows are applied here rather than when it is accumulated).
     let foam = textureSampleLevel(foam_tex, samp, in.grid_xz / frame.sizes.x, 0.0).r * att;
-    o.material = vec4<f32>(max(foam_coverage(foam, in.grid_xz, footprint), surf(in.grid_xz, depth, footprint)), 0.0, 0.0, 0.0);
+    // Water the raft has broken: steep wake slopes (the bow wave, the wake's first crests).
+    // Only close to the hull: further out the wake is unbroken waves.
+    let hull_xz = (frame.wake.xy + 0.5 * frame.wake.w) * frame.wake.z;
+    let churn = 0.4 * smoothstep(0.3, 0.6, length(wake_s)) * smoothstep(5.0, 2.5, distance(in.grid_xz, hull_xz));
+    o.material = vec4<f32>(max(foam_coverage(foam + churn, in.grid_xz, footprint), surf(in.grid_xz, depth, footprint)), 0.0, 0.0, 0.0);
     // Motion of the unjittered image (TAA jitters the projection, not the scene).
     o.motion = prev_px - (in.pos.xy - frame.jitter.xy);
     return o;

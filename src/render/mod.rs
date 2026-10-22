@@ -10,4 +10,5 @@ pub mod seabed;
 pub mod shade;
 pub mod sky;
 pub mod taa;
+pub mod wake;
 pub mod water_optics;

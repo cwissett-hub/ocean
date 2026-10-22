@@ -15,6 +15,7 @@ struct Frame {
     resolution: vec4<f32>,  // w, h, 1/w, 1/h of the internal render targets
     seabed: vec4<f32>,      // seabed map: local corner x, z, texel m, resolution (seabed_common.wgsl)
     jitter: vec4<f32>,      // TAA sub-pixel offset of this frame's projection, pixels (x right, y down)
+    wake: vec4<f32>,        // raft wake grid: origin cell x, z, cell m, resolution (wake_common.wgsl)
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;

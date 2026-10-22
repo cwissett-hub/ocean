@@ -20,6 +20,7 @@ use crate::render::seabed::SeabedMap;
 use crate::render::shade::ShadePass;
 use crate::render::sky::{SkyLuts, sun_direction};
 use crate::render::taa::{self, TaaPass};
+use crate::render::wake::WakeSim;
 use crate::scene::buoy::{BuoyBody, build_buoy_mesh};
 use crate::scene::camera::Camera;
 use crate::scene::cameras::{CameraController, CameraMode, FreeFlyInput};
@@ -68,6 +69,8 @@ struct FrameUniforms {
     seabed: [f32; 4],
     /// TAA jitter of this frame's projection, pixels.
     jitter: [f32; 4],
+    /// WakeSim::params.
+    wake: [f32; 4],
 }
 
 /// The parameters that change the wave spectrum (rebuilding it costs a few milliseconds).
@@ -142,6 +145,8 @@ pub struct Renderer {
     raft: RaftBody,
     seabed: SeabedMap,
     taa: TaaPass,
+    /// The raft's own waves.
+    wake: WakeSim,
     /// Frames rendered (drives the TAA jitter sequence).
     frame_index: u32,
     taa_was_on: bool,
@@ -196,6 +201,7 @@ impl Renderer {
         let sky = SkyLuts::new(ctx, lib);
         let mesh = OceanMesh::new(d);
         let seabed = SeabedMap::new(d);
+        let wake = WakeSim::new(d, &ctx.queue, lib);
         let uniforms = d.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame uniforms"),
             size: std::mem::size_of::<FrameUniforms>() as u64,
@@ -262,6 +268,16 @@ impl Renderer {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: vis,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         use wgpu::BindingResource as B;
@@ -293,6 +309,10 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 5,
                         resource: B::TextureView(seabed.view()),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: B::TextureView(wake.view()),
                     },
                 ],
             })
@@ -373,6 +393,7 @@ impl Renderer {
             buoy_body: BuoyBody::at(BUOY_HOME),
             raft,
             seabed,
+            wake,
             taa,
             frame_index: 0,
             taa_was_on: false,
@@ -534,6 +555,7 @@ impl Renderer {
         self.objects.rebase(s);
         self.reflections.invalidate_history();
         self.taa.invalidate();
+        self.wake.rebase(s);
         self.prev_view_proj = None;
     }
 
@@ -651,6 +673,17 @@ impl Renderer {
         self.prev_view_proj = Some(unjittered);
         let sun = sun_direction(params.sun_elevation_deg, params.sun_azimuth_deg);
         let exposure = exposure_multiplier(exposure_ev(params.sun_elevation_deg));
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        self.timer.start(&mut enc);
+        // The raft's waves step first: the frame uniforms carry the window they used.
+        self.wake.record(
+            &mut enc,
+            &self.queue,
+            Vec2::new(self.raft.position.x, self.raft.position.z),
+            self.raft.heading,
+            dt,
+        );
+        self.timer.mark(&mut enc, "wake");
         let u = FrameUniforms {
             view_proj: vp.to_cols_array_2d(),
             inv_view_proj: vp.inverse().to_cols_array_2d(),
@@ -670,11 +703,10 @@ impl Renderer {
             resolution: [w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32],
             seabed: self.seabed.params(&self.origin),
             jitter: [j.x, j.y, 0.0, 0.0],
+            wake: self.wake.params(),
         };
         self.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
 
-        let mut enc = self.device.create_command_encoder(&Default::default());
-        self.timer.start(&mut enc);
         self.ocean.update(
             &mut enc,
             t % REPEAT_PERIOD_S,

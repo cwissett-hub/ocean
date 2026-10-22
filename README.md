@@ -23,7 +23,9 @@ through procedurally generated desert islands at 60 fps in a 1280×720 window.
   leave a line of foam at the beach.
 - **Raft**: seven driftwood logs, a mast and a square sail. It rides the GPU wave-height query
   (heaving, pitching and rolling with the swell), sails by the wind, paddles, beaches on sand,
-  throws bow spray when it slams into a wave and leaves a foam wake.
+  throws bow spray when it slams into a wave, and pushes the water aside: a GPU wave simulation
+  (Tessendorf's iWave, dispersive like real deep-water waves) gives it a bow wave and a Kelvin
+  wake, with white water along the hull.
 - **Reflections**: hardware ray queries against a 512 m patch of the displaced waves (refitted
   every frame) and every object (raft, buoy, islands, palms), so crests reflect and hide each
   other; screen-space fallback.

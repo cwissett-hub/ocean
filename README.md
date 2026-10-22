@@ -1,27 +1,38 @@
 # Ocean
 
 A custom real-time sunset ocean in Rust + wgpu: physically based FFT waves, whitecaps driven
-by the waves' own folding, hardware ray-traced reflections, spray, and a floating buoy, at
-60 fps in a 1280×720 window.
+by the waves' own folding, hardware ray-traced reflections and spray. Sail a driftwood raft
+through procedurally generated desert islands at 60 fps in a 1280×720 window.
 
 ![Sunset sea with a floating buoy and the sun glitter path](docs/screenshot.png)
 
 ## What's in it
 
 - **Waves**: four 256² FFT cascades (1 km swell down to 12 cm ripples) evolved on the GPU from
-  a JONSWAP spectrum (fetch-limited, capped at full development) plus a swell component.
+  a JONSWAP spectrum (fetch-limited, capped at full development) plus a swell component, with
+  finite-depth dispersion for the 25 m deep sea.
 - **Whitecaps**: foam is injected where the combined horizontal displacement folds the surface
   (Jacobian below a threshold), accumulates and decays; spray that lands adds to it.
 - **Sky**: Hillaire 2020 atmosphere (transmittance, multiple scattering, sky-view LUTs).
 - **Water shading**: Fresnel, GGX sun glitter whose roughness carries the slope variance of
-  unresolved wave scales, deep-water scattering, crest glow, aerial perspective, refraction of
-  the buoy's hull.
+  unresolved wave scales, scattering in the water column, a sandy seabed seen through the
+  water everywhere (turquoise in the shallows), crest glow, aerial perspective.
+- **Islands**: sparse desert islands a couple of kilometres apart, sometimes in archipelagos,
+  with dunes, beaches shelving into the sea floor and palm trees; deterministic from a seed,
+  streamed in and out around the raft on a worker thread. Waves calm over the shallows and
+  break into a surf line at the beach.
+- **Raft**: seven driftwood logs, a mast and a square sail. It rides the GPU wave-height query
+  (heaving, pitching and rolling with the swell), sails by the wind, paddles, beaches on sand,
+  throws bow spray when it slams into a wave and leaves a foam wake.
 - **Reflections**: hardware ray queries against a 512 m patch of the displaced waves (refitted
-  every frame) and the buoy, so crests reflect and hide each other; screen-space fallback.
+  every frame) and every object (raft, buoy, islands, palms), so crests reflect and hide each
+  other; screen-space fallback.
 - **Particles**: spray bursts from breaking crests (from ~8 m/s wind), faint mist.
-- **Buoy**: a five-point spring-damper float riding a GPU wave-height query.
+- **Unbounded world**: render coordinates are rebased every 4 km by whole wave periods, so you
+  can sail on indefinitely without f32 precision loss.
 
-GPU frame ≈ 5–6 ms (p95 5.85 ms) at 1600×900 on an RTX 2000 Ada laptop GPU.
+GPU frame ≈ 5–6 ms (bench course p95 5.9 ms chase, 5.4 ms high) at 1600×900 on an RTX 2000
+Ada laptop GPU.
 
 ## Requirements
 
@@ -31,7 +42,7 @@ GPU frame ≈ 5–6 ms (p95 5.85 ms) at 1600×900 on an RTX 2000 Ada laptop GPU.
 
 ## Build and run
 
-```
+```sh
 cargo run --release
 ```
 
@@ -40,8 +51,8 @@ otherwise uses the copies compiled in.
 
 ## Controls
 
-| Key | |
-|---|---|
+| Key | Action |
+| --- | --- |
 | A / D | steer the raft |
 | W / S | paddle forward / back (push off a beach) |
 | Space | sail up / down |
@@ -52,15 +63,21 @@ otherwise uses the copies compiled in.
 | F5 | reload shaders from disk (errors shown, last good shaders keep running) |
 | Esc | quit |
 
+The first island lies about 400 m ahead, under the sun.
+
 ## Command line
 
 - `--set key=value` — set any setting, e.g. `--set wind_speed=15 --set sun_elevation_deg=1`
-- `--bench N [--bench-out file.json]` — render N frames uncapped after a warm-up and write GPU
-  and CPU frame-time statistics as JSON
+- `--start-at x,z[,heading]` — start the raft at a world position (metres) and heading (degrees)
+- `--bench N [--bench-out file.json] [--bench-camera chase|deck|high]` — sail a scripted
+  course past the first island, rendering N frames uncapped after a warm-up, and write GPU and
+  CPU frame-time statistics as JSON
 - `--panel` — open the settings panel at start
 - `--freeze-time S` — pin the waves at time S (for side-by-side comparisons)
 
 ## Tests
 
-`cargo test` runs the wave physics, spectrum, foam, buoy, shader validation and other unit
-tests, plus headless GPU tests (GPU FFT vs CPU reference, wave query vs CPU surface, ray query).
+`cargo test` runs the wave physics, spectrum, foam, raft and buoy physics, island placement
+and streaming, cameras, shader validation and other unit tests, plus headless GPU tests (GPU
+FFT vs CPU reference, wave query vs CPU surface including the shallows, seabed map vs CPU
+heights, ray query).

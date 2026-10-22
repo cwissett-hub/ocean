@@ -411,6 +411,10 @@ impl Renderer {
         self.cameras.mode
     }
 
+    pub fn set_camera_mode(&mut self, mode: CameraMode) {
+        self.cameras.mode = mode;
+    }
+
     /// Steps the raft and buoy on the newest water samples, moves the camera, and queues the
     /// next water query (raft, buoy, camera points).
     fn update_world(&mut self, params: &OceanParams, input: &FrameInput, t: f32, dt: f32) -> Camera {

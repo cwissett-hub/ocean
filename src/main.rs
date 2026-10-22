@@ -11,7 +11,9 @@ use ocean::gpu::shaders::ShaderLibrary;
 use ocean::input::KeyState;
 use ocean::params::{OceanParams, apply_overrides};
 use ocean::render::frame::{FrameInput, Renderer};
+use ocean::scene::cameras::CameraMode;
 use ocean::ui::{self, OverlayInfo};
+use ocean::world::islands::WORLD_SEED;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
@@ -30,6 +32,7 @@ pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
 struct Bench {
     frames: u32,
     out: std::path::PathBuf,
+    camera: CameraMode,
     seen: u32,
     cpu_ms: Vec<f32>,
 }
@@ -296,6 +299,9 @@ impl ApplicationHandler for App {
                 if let Some((x, z, h)) = self.start_at {
                     g.renderer.place_raft(glam::DVec2::new(x, z), h);
                 }
+                if let Some(b) = &self.bench {
+                    g.renderer.set_camera_mode(b.camera);
+                }
                 self.gfx = Some(g)
             }
             Err(e) => {
@@ -357,8 +363,14 @@ impl ApplicationHandler for App {
                 self.last_frame = now;
                 // f64 until reduced to one wave period: f32 seconds judder after hours.
                 let t = sim_time(self.freeze_time.map_or((now - self.start).as_secs_f64(), f64::from));
+                // A bench sails its scripted course; otherwise the player has the helm.
+                let controls = if self.bench.is_some() {
+                    bench::course_controls((now - self.start).as_secs_f32())
+                } else {
+                    self.keys.raft_controls(self.sail_up)
+                };
                 let input = FrameInput {
-                    controls: self.keys.raft_controls(self.sail_up),
+                    controls,
                     free: self.keys.free_fly(),
                     cycle_camera: std::mem::take(&mut self.cycle_camera),
                 };
@@ -400,7 +412,8 @@ impl ApplicationHandler for App {
 }
 
 /// `--set key=value` (repeatable) overrides any OceanParams field.
-/// `--bench N [--bench-out file]` renders N frames uncapped and writes a JSON report.
+/// `--bench N [--bench-out file] [--bench-camera chase|deck|high]` sails the scripted bench
+/// course past the start island, rendering N frames uncapped, and writes a JSON report.
 /// `--panel` opens the settings panel at start; `--freeze-time S` pins the waves at time S;
 /// `--start-at x,z[,heading]` puts the raft at a world position.
 struct CliArgs {
@@ -416,6 +429,7 @@ fn parse_args() -> anyhow::Result<CliArgs> {
     let mut overrides = Vec::new();
     let mut bench_frames = None;
     let mut bench_out = std::path::PathBuf::from("bench.json");
+    let mut bench_camera = CameraMode::Chase;
     let mut panel = false;
     let mut freeze = None;
     let mut start_at = None;
@@ -426,6 +440,11 @@ fn parse_args() -> anyhow::Result<CliArgs> {
             "--set" => overrides.push(value()?),
             "--bench" => bench_frames = Some(value()?.parse::<u32>()?),
             "--bench-out" => bench_out = value()?.into(),
+            "--bench-camera" => {
+                let v = value()?;
+                bench_camera = bench::bench_camera(&v)
+                    .ok_or_else(|| anyhow::anyhow!("--bench-camera chase|deck|high, not {v:?}"))?;
+            }
             "--panel" => panel = true,
             "--freeze-time" => freeze = Some(value()?.parse::<f32>()?),
             "--start-at" => {
@@ -443,10 +462,16 @@ fn parse_args() -> anyhow::Result<CliArgs> {
         Bench {
             frames,
             out: bench_out,
+            camera: bench_camera,
             seen: 0,
             cpu_ms: Vec::new(),
         }
     });
+    // A bench without --start-at sails the course.
+    if bench.is_some() && start_at.is_none() {
+        let (p, h) = bench::course_start(WORLD_SEED);
+        start_at = Some((p.x, p.y, h));
+    }
     Ok(CliArgs {
         params,
         bench,

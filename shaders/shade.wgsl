@@ -15,6 +15,30 @@
 @group(0) @binding(6) var opaque_depth: texture_depth_2d;
 @group(0) @binding(7) var opaque_albedo: texture_2d<f32>;
 @group(0) @binding(8) var seabed: texture_2d<f32>;
+// RT sun visibility (r) and ambient visibility (g), from rt_lighting.wgsl (1×1 white without RT).
+@group(0) @binding(9) var lighting_tex: texture_2d<f32>;
+
+// The RT visibility mask, blurred 3×3 over neighbours at a similar depth: each pixel has a
+// single noisy ray per frame, and TAA alone leaves a fine grain.
+fn lighting_at(px: vec2<i32>, depth: f32) -> vec2<f32> {
+    let size = vec2<i32>(textureDimensions(lighting_tex));
+    if (size.x <= 1) {
+        return vec2<f32>(1.0);
+    }
+    var sum = vec2<f32>(0.0);
+    var weight = 0.0;
+    for (var dy = -1; dy <= 1; dy++) {
+        for (var dx = -1; dx <= 1; dx++) {
+            let q = clamp(px + vec2<i32>(dx, dy), vec2<i32>(0), size - 1);
+            let dq = textureLoad(depth_tex, q, 0);
+            // Reverse-Z: compare relative depth; neighbours across an edge get no say.
+            let w = select(0.0, 1.0, abs(dq - depth) < 0.08 * depth) * select(1.0, 2.0, dx == 0 && dy == 0);
+            sum += textureLoad(lighting_tex, q, 0).rg * w;
+            weight += w;
+        }
+    }
+    return sum / max(weight, 1e-4);
+}
 
 
 struct VsOut {
@@ -30,7 +54,7 @@ fn vs_full(@builtin(vertex_index) i: u32) -> VsOut {
 }
 
 
-fn shade_water(px: vec2<f32>, p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam: f32, traced: vec4<f32>) -> vec3<f32> {
+fn shade_water(px: vec2<f32>, p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam: f32, traced: vec4<f32>, vis: vec2<f32>) -> vec3<f32> {
     let to_eye = frame.cam_pos.xyz - p;
     let dist = length(to_eye);
     let v = to_eye / dist;
@@ -41,14 +65,17 @@ fn shade_water(px: vec2<f32>, p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam
     }
     let n_v = max(dot(n, v), 1e-4);
     let sun = frame.sun_dir.xyz;
-    let e_sun = sun_transmittance();
+    // Where the raft or an island shades the water, the sun's glitter, glow and light into
+    // the water go with it.
+    let e_sun = sun_transmittance() * vis.x;
 
     // Reflection: whatever the reflection pass found (other waves, objects), else the sky.
     // Rays reflected below the horizon that found nothing see the horizon.
     let r0 = reflect(-v, n);
     let r = normalize(vec3<f32>(r0.x, max(r0.y, 0.0), r0.z));
     let f = fresnel(n_v);
-    let reflected = mix(sky_radiance(r), traced.rgb, traced.a) * f;
+    // Contact shading: the sky seen in the water right by the hull is partly the hull.
+    let reflected = mix(sky_radiance(r), traced.rgb, traced.a) * f * mix(1.0, vis.y, 0.6);
 
     // Sun specular: microfacet Beckmann over the unresolved slopes.
     let alpha2 = clamp(2.0 * variance, 1e-4, 1.0);
@@ -62,7 +89,7 @@ fn shade_water(px: vec2<f32>, p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam
 
     // Light scattered back up out of the water column (infinitely deep), and the light that
     // gets into the water to reach anything below.
-    let e_in = underwater_irradiance();
+    let e_in = e_sun * max(sun.y, 0.0) * (1.0 - fresnel(max(sun.y, 0.0))) + sky_irradiance() * 0.94;
     let column = e_in * water_column_reflectance();
 
     // The bottom: the sandy seabed where the refracted view ray meets it (one step along the
@@ -131,10 +158,11 @@ fn fs_shade(in: VsOut) -> @location(0) vec4<f32> {
     let foam = textureLoad(material_tex, px, 0).r;
     let traced = textureSampleLevel(reflection_tex, lin, in.pos.xy * frame.resolution.zw, 0.0);
     let mat = textureLoad(material_tex, px, 0);
+    let vis = lighting_at(px, depth);
     let id = decode_material(mat.g);
     if (id != MAT_WATER) {
-        return vec4<f32>(shade_object(p, nv.xyz, id, mat.b), 1.0);
+        return vec4<f32>(shade_object_lit(p, nv.xyz, id, mat.b, vis.x, vis.y), 1.0);
     }
-    return vec4<f32>(shade_water(in.pos.xy, p, nv.xyz, nv.w, foam, traced), 1.0);
+    return vec4<f32>(shade_water(in.pos.xy, p, nv.xyz, nv.w, foam, traced, vis), 1.0);
 }
 

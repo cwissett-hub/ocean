@@ -133,11 +133,17 @@ fn raft_wet_line(k: u32) -> f32 {
 // their sheen, sunlight glowing through the sail when it is between the eye and a low sun, and
 // the buoy's lantern at dusk.
 fn shade_object(p: vec3<f32>, n: vec3<f32>, id: u32, param: f32) -> vec3<f32> {
+    return shade_object_lit(p, n, id, param, 1.0, 1.0);
+}
+
+// shade_object with ray-traced sun visibility and ambient visibility (soft shadows, contact
+// occlusion) applied.
+fn shade_object_lit(p: vec3<f32>, n: vec3<f32>, id: u32, param: f32, sun_vis: f32, ambient_vis: f32) -> vec3<f32> {
     let to_eye = frame.cam_pos.xyz - p;
     let dist = length(to_eye);
     let v = to_eye / dist;
     let sun = frame.sun_dir.xyz;
-    let e_sun = sun_transmittance();
+    let e_sun = sun_transmittance() * sun_vis;
     var albedo = material_albedo(id, param);
     var variance = material_variance(id);
     if (id == MAT_RAFT_WOOD) {
@@ -155,7 +161,8 @@ fn shade_object(p: vec3<f32>, n: vec3<f32>, id: u32, param: f32) -> vec3<f32> {
     let n_l = max(dot(n, sun), 0.0);
     let n_v = max(dot(n, v), 1e-4);
     let ambient = sky_irradiance() * (0.6 + 0.4 * n.y) + sky_radiance(normalize(vec3<f32>(-sun.x, 0.1, -sun.z))) * PI * 0.15 * max(-n.y, 0.0);
-    var col = albedo / PI * (e_sun * n_l + ambient);
+    let occluded = ambient * ambient_vis;
+    var col = albedo / PI * (e_sun * n_l + occluded);
     let alpha2 = clamp(2.0 * variance, 1e-3, 1.0);
     let h = normalize(v + sun);
     if (n_l > 0.0) {
@@ -171,7 +178,7 @@ fn shade_object(p: vec3<f32>, n: vec3<f32>, id: u32, param: f32) -> vec3<f32> {
     let sky_seen = sky_radiance(normalize(vec3<f32>(rr.x, max(rr.y, 0.02), rr.z)));
     let blur = mix(0.03, 0.6, clamp(alpha2, 0.0, 1.0));
     let env = sky_seen * mix(0.3, 1.0, smoothstep(-blur, blur, rr.y));
-    col += env * f * select(0.5, 0.15, alpha2 > 0.3);
+    col += env * f * select(0.5, 0.15, alpha2 > 0.3) * ambient_vis;
     if (id == MAT_SAND) {
         // A few quartz grains on dry sand catch the sun: 1 cm cells, one grain in ~200 tilted
         // to mirror the sun at the eye. Fades with distance before it can alias into noise.
@@ -184,7 +191,8 @@ fn shade_object(p: vec3<f32>, n: vec3<f32>, id: u32, param: f32) -> vec3<f32> {
     if (id == MAT_SAIL || id == MAT_PALM_FROND) {
         // Thin cloth / leaves: light through them toward the eye.
         let through = pow(max(dot(-v, sun), 0.0), 4.0);
-        col += albedo * e_sun * through * select(0.25, 0.6, id == MAT_SAIL);
+        // Light through the cloth / leaf itself: not shadowed by the surface it passes through.
+        col += albedo * sun_transmittance() * through * select(0.25, 0.6, id == MAT_SAIL);
     }
     col += material_emission(id, param) * 0.4 * (1.0 - smoothstep(-6.0, 20.0, degrees(asin(sun.y))));
     return aerial(col, -v, dist);

@@ -9,6 +9,8 @@ pub struct ShadePass {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     seabed: wgpu::TextureView,
+    /// RT sun visibility (r) and ambient visibility (g); white without ray tracing.
+    lighting: wgpu::TextureView,
     /// One per reflection history side (see ReflectionPass::index).
     bind_groups: [wgpu::BindGroup; 2],
 }
@@ -35,6 +37,7 @@ impl ShadePass {
         g: &GBuffer,
         refl: &[wgpu::TextureView; 2],
         seabed: &wgpu::TextureView,
+        lighting: &wgpu::TextureView,
     ) -> ShadePass {
         let float = wgpu::TextureSampleType::Float { filterable: false };
         let layout = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -63,6 +66,7 @@ impl ShadePass {
                 tex_entry(6, wgpu::TextureSampleType::Depth),
                 tex_entry(7, float),
                 tex_entry(8, float),
+                tex_entry(9, float),
             ],
         });
         let pl = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -102,12 +106,13 @@ impl ShadePass {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let bind_groups = Self::bind(d, &layout, frame, g, refl, &sampler, seabed);
+        let bind_groups = Self::bind(d, &layout, frame, g, refl, &sampler, seabed, lighting);
         ShadePass {
             pipeline,
             layout,
             sampler,
             seabed: seabed.clone(),
+            lighting: lighting.clone(),
             bind_groups,
         }
     }
@@ -120,6 +125,7 @@ impl ShadePass {
         refl: &[wgpu::TextureView; 2],
         sampler: &wgpu::Sampler,
         seabed: &wgpu::TextureView,
+        lighting: &wgpu::TextureView,
     ) -> [wgpu::BindGroup; 2] {
         use wgpu::BindingResource::TextureView as T;
         std::array::from_fn(|i| {
@@ -163,14 +169,35 @@ impl ShadePass {
                         binding: 8,
                         resource: T(seabed),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: T(lighting),
+                    },
                 ],
             })
         })
     }
 
     /// Call after the G-buffer is recreated.
-    pub fn rebind(&mut self, d: &wgpu::Device, frame: &wgpu::Buffer, g: &GBuffer, refl: &[wgpu::TextureView; 2]) {
-        self.bind_groups = Self::bind(d, &self.layout, frame, g, refl, &self.sampler, &self.seabed);
+    pub fn rebind(
+        &mut self,
+        d: &wgpu::Device,
+        frame: &wgpu::Buffer,
+        g: &GBuffer,
+        refl: &[wgpu::TextureView; 2],
+        lighting: &wgpu::TextureView,
+    ) {
+        self.lighting = lighting.clone();
+        self.bind_groups = Self::bind(
+            d,
+            &self.layout,
+            frame,
+            g,
+            refl,
+            &self.sampler,
+            &self.seabed,
+            &self.lighting,
+        );
     }
 
     pub fn record(&self, enc: &mut wgpu::CommandEncoder, g: &GBuffer, sky: &SkyLuts, refl_index: usize) {

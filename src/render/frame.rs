@@ -15,6 +15,7 @@ use crate::render::ocean_mesh::{BASE_CELL_M, GRID, LEVELS, OceanMesh};
 use crate::render::particles::{ParticleInputs, ParticleSystem};
 use crate::render::post::{Post, exposure_ev, exposure_multiplier};
 use crate::render::reflect::ReflectionPass;
+use crate::render::rt_lighting::{self, RtLighting};
 use crate::render::rt_scene::{MAX_INSTANCES as RT_MAX_INSTANCES, RtPatchConfig, RtScene, instance_list, patch_origin};
 use crate::render::seabed::SeabedMap;
 use crate::render::shade::ShadePass;
@@ -137,6 +138,10 @@ pub struct Renderer {
     timer: GpuTimer,
     /// Ray-tracing scene; None when the device has no ray query.
     rt: Option<RtScene>,
+    /// RT sun shadows and ambient occlusion (with `rt`).
+    rt_light: Option<RtLighting>,
+    /// Fully-lit mask for the shade pass without ray tracing.
+    white: wgpu::TextureView,
     particles: ParticleSystem,
     objects: ObjectPass,
     origin: WorldOrigin,
@@ -370,7 +375,17 @@ impl Renderer {
         let reflections = ReflectionPass::new(d, lib, &ctx.queue, &uniforms, &gbuffer);
         let particles = ParticleSystem::new(d, &ctx.queue, lib, &uniforms, &ocean, &sky, &gbuffer, &seabed);
         let taa = TaaPass::new(d, lib, &uniforms, &gbuffer);
-        let shade = ShadePass::new(d, lib, &uniforms, &sky, &gbuffer, reflections.views(), seabed.view());
+        let white = rt_lighting::white(d, &ctx.queue);
+        let mut shade = ShadePass::new(
+            d,
+            lib,
+            &uniforms,
+            &sky,
+            &gbuffer,
+            reflections.views(),
+            seabed.view(),
+            &white,
+        );
         let post = Post::new(d, lib, format, &gbuffer);
         let mut objects = ObjectPass::new(d, &ctx.queue, lib, &layout);
         let buoy_mesh = objects.add_mesh(d, &build_buoy_mesh());
@@ -385,8 +400,16 @@ impl Renderer {
             reflections.enable_rt(d, lib, &sky, &uniforms, &gbuffer, &scene);
             scene
         });
+        let rt_light = rt
+            .as_ref()
+            .map(|scene| RtLighting::new(d, lib, &uniforms, &gbuffer, scene));
+        if let Some(l) = &rt_light {
+            shade.rebind(d, &uniforms, &gbuffer, reflections.views(), l.view());
+        }
         Renderer {
             rt,
+            rt_light,
+            white,
             particles,
             objects,
             buoy_mesh,
@@ -615,8 +638,17 @@ impl Renderer {
             self.gbuffer = GBuffer::new(&self.device, want);
             self.reflections
                 .resize(&self.device, &self.uniforms, &self.gbuffer, self.rt.as_ref());
-            self.shade
-                .rebind(&self.device, &self.uniforms, &self.gbuffer, self.reflections.views());
+            if let (Some(l), Some(rt)) = (&mut self.rt_light, &self.rt) {
+                l.resize(&self.device, &self.uniforms, &self.gbuffer, rt);
+            }
+            let lighting = self.rt_light.as_ref().map_or(&self.white, |l| l.view());
+            self.shade.rebind(
+                &self.device,
+                &self.uniforms,
+                &self.gbuffer,
+                self.reflections.views(),
+                lighting,
+            );
             self.post.resize(&self.device, &self.gbuffer);
             self.particles.resize(&self.device, &self.uniforms, &self.gbuffer);
             self.taa.resize(&self.device, &self.uniforms, &self.gbuffer);
@@ -804,6 +836,10 @@ impl Renderer {
                 .draw_gbuffer(&mut pass, &self.ocean_bind_groups[self.ocean.foam_index()]);
         }
         self.timer.mark(&mut enc, "gbuffer");
+        if let Some(l) = &self.rt_light {
+            l.record(&mut enc);
+        }
+        self.timer.mark(&mut enc, "rt lighting");
         self.reflections.record(&mut enc, params.reflection_mode, &self.sky);
         self.timer.mark(&mut enc, "reflections");
         self.shade

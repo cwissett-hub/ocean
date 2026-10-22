@@ -5,6 +5,7 @@ pub mod ocean_mesh;
 pub mod particles;
 pub mod post;
 pub mod reflect;
+pub mod rt_lighting;
 pub mod rt_scene;
 pub mod seabed;
 pub mod shade;

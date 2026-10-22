@@ -29,6 +29,9 @@ through procedurally generated desert islands at 60 fps in a 1280×720 window.
 - **Reflections**: hardware ray queries against a 512 m patch of the displaced waves (refitted
   every frame) and every object (raft, buoy, islands, palms), so crests reflect and hide each
   other; screen-space fallback.
+- **Lighting**: ray-traced soft sun shadows and contact ambient occlusion from the raft, buoy,
+  islands and palms (one jittered ray each per pixel, resolved by temporal anti-aliasing),
+  contrast-adaptive sharpening and dithered output.
 - **Particles**: spray bursts from breaking crests (from ~8 m/s wind), faint mist.
 - **Unbounded world**: render coordinates are rebased every 4 km by whole wave periods, so you
   can sail on indefinitely without f32 precision loss.

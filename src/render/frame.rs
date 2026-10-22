@@ -26,6 +26,20 @@ use crate::scene::raft_mesh::build_raft_mesh;
 use crate::waves::foam::foam_params;
 use crate::waves::gpu_ocean::GpuOcean;
 use crate::waves::query::{WaterSample, WaveQuery};
+use crate::world::islands::WORLD_SEED;
+use crate::world::origin::WorldOrigin;
+use crate::world::streaming::{IslandStreamer, ReadyIsland};
+use crate::world::terrain_mesh::palm_mesh;
+
+/// An island with a mesh on the GPU.
+struct LiveIsland {
+    desc: crate::world::islands::IslandDesc,
+    mesh: MeshHandle,
+    palms: Vec<Mat4>,
+}
+
+/// Island meshes uploaded per frame (each is a few MB at most).
+const ISLAND_UPLOADS_PER_FRAME: usize = 2;
 use crate::waves::spectrum::{
     CASCADE_SIZES_M, REPEAT_PERIOD_S, SpectrumSet, build_spectrum, cascade_band, slope_variance,
     spectrum_significant_height, unresolved_slope_variance,
@@ -110,6 +124,11 @@ pub struct Renderer {
     rt: Option<RtScene>,
     particles: ParticleSystem,
     objects: ObjectPass,
+    origin: WorldOrigin,
+    streamer: IslandStreamer,
+    palm_mesh: MeshHandle,
+    islands: std::collections::HashMap<u64, LiveIsland>,
+    ready: std::collections::VecDeque<ReadyIsland>,
     buoy_mesh: MeshHandle,
     raft_mesh: MeshHandle,
     buoy_body: BuoyBody,
@@ -298,6 +317,7 @@ impl Renderer {
         let mut objects = ObjectPass::new(d, &ctx.queue, lib, &layout);
         let buoy_mesh = objects.add_mesh(d, &build_buoy_mesh());
         let raft_mesh = objects.add_mesh(d, &build_raft_mesh());
+        let palm_mesh = objects.add_mesh(d, &palm_mesh());
         let query = WaveQuery::new(ctx, lib, &ocean);
         let raft = raft_start();
         let cameras = CameraController::new(&raft);
@@ -314,6 +334,11 @@ impl Renderer {
             objects,
             buoy_mesh,
             raft_mesh,
+            origin: WorldOrigin::default(),
+            streamer: IslandStreamer::new(WORLD_SEED),
+            palm_mesh,
+            islands: std::collections::HashMap::new(),
+            ready: std::collections::VecDeque::new(),
             buoy_body: BuoyBody::at(BUOY_HOME),
             raft,
             query,
@@ -343,6 +368,13 @@ impl Renderer {
 
     pub fn resize(&mut self, surface_extent: (u32, u32)) {
         self.surface_extent = surface_extent;
+    }
+
+    /// Moves the raft (world position, heading in degrees) — the `--start-at` dev flag.
+    pub fn place_raft(&mut self, world: glam::DVec2, heading_deg: f32) {
+        let p = self.origin.to_local(world);
+        self.raft = RaftBody::at(Vec3::new(p.x, 0.0, p.y), heading_deg.to_radians());
+        self.cameras = CameraController::new(&self.raft);
     }
 
     pub fn raft(&self) -> &RaftBody {
@@ -387,7 +419,9 @@ impl Renderer {
         } else {
             input.controls
         };
-        let terrain = |_: Vec2| -crate::world::islands::SEA_DEPTH_M;
+        self.stream_islands();
+        let (streamer, origin) = (&self.streamer, self.origin);
+        let terrain = |p: Vec2| streamer.terrain_height(origin.to_world(p));
         let mut camera_water = 0.0;
         if let Some(s) = &self.water {
             let raft_w: [WaterSample; 9] = std::array::from_fn(|i| s[RAFT_Q + i]);
@@ -401,16 +435,59 @@ impl Renderer {
         let cam = self
             .cameras
             .update(dt, &self.raft, params.sun_azimuth_deg, &input.free, &ground);
-        self.objects.set_instances(&[
+        let mut instances = vec![
             (1, self.buoy_mesh, self.buoy_body.transform()),
             (2, self.raft_mesh, self.raft.transform()),
-        ]);
+        ];
+        for (id, isle) in &self.islands {
+            let c = self.origin.to_local(isle.desc.center);
+            let t = Mat4::from_translation(Vec3::new(c.x, 0.0, c.y));
+            instances.push((*id, isle.mesh, t));
+            for (k, p) in isle.palms.iter().enumerate() {
+                instances.push((
+                    id ^ (0x9E37_79B9_7F4A_7C15u64.wrapping_mul(k as u64 + 1)),
+                    self.palm_mesh,
+                    t * *p,
+                ));
+            }
+        }
+        self.objects.set_instances(&instances);
         let mut points = [Vec2::ZERO; QUERY_POINTS];
         points[RAFT_Q..RAFT_Q + 9].copy_from_slice(&self.raft.sample_points());
         points[BUOY_Q..BUOY_Q + 5].copy_from_slice(&self.buoy_body.sample_points());
         points[CAMERA_Q] = Vec2::new(cam.position.x, cam.position.z);
         self.query.request(&points);
         cam
+    }
+
+    /// Plans island streaming around the raft, drops far islands, and uploads a few finished
+    /// meshes (more wait for later frames, so an archipelago never causes a hitch).
+    fn stream_islands(&mut self) {
+        let focus = self
+            .origin
+            .to_world(Vec2::new(self.raft.position.x, self.raft.position.z));
+        self.streamer.update(focus);
+        for id in self.streamer.take_unloads() {
+            if let Some(isle) = self.islands.remove(&id) {
+                self.objects.remove_mesh(isle.mesh);
+            }
+            self.ready.retain(|r| r.desc.id != id);
+        }
+        self.ready.extend(self.streamer.take_ready());
+        for _ in 0..ISLAND_UPLOADS_PER_FRAME {
+            let Some(r) = self.ready.pop_front() else { break };
+            let mesh = self.objects.add_mesh(&self.device, &r.mesh);
+            if let Some(old) = self.islands.insert(
+                r.desc.id,
+                LiveIsland {
+                    desc: r.desc,
+                    mesh,
+                    palms: r.palms,
+                },
+            ) {
+                self.objects.remove_mesh(old.mesh);
+            }
+        }
     }
 
     fn ensure_targets(&mut self, scale: f32) {

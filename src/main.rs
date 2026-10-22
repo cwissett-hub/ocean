@@ -62,6 +62,7 @@ struct App {
     keys: KeyState,
     sail_up: bool,
     cycle_camera: bool,
+    start_at: Option<(f64, f64, f32)>,
 }
 
 impl App {
@@ -81,6 +82,7 @@ impl App {
             keys: KeyState::default(),
             sail_up: true,
             cycle_camera: false,
+            start_at: None,
         }
     }
 }
@@ -290,7 +292,12 @@ impl ApplicationHandler for App {
             .with_inner_size(LogicalSize::new(1280.0, 720.0));
         let window = Arc::new(el.create_window(attrs).expect("create window"));
         match Gfx::new(window, &self.params) {
-            Ok(g) => self.gfx = Some(g),
+            Ok(mut g) => {
+                if let Some((x, z, h)) = self.start_at {
+                    g.renderer.place_raft(glam::DVec2::new(x, z), h);
+                }
+                self.gfx = Some(g)
+            }
             Err(e) => {
                 eprintln!("ocean: {e:#}");
                 el.exit();
@@ -394,14 +401,16 @@ impl ApplicationHandler for App {
 
 /// `--set key=value` (repeatable) overrides any OceanParams field.
 /// `--bench N [--bench-out file]` renders N frames uncapped and writes a JSON report.
-/// `--panel` opens the settings panel at start; `--freeze-time S` pins the waves at time S.
-fn parse_args() -> anyhow::Result<(OceanParams, Option<Bench>, bool, Option<f32>)> {
+/// `--panel` opens the settings panel at start; `--freeze-time S` pins the waves at time S;
+/// `--start-at x,z[,heading]` puts the raft at a world position.
+fn parse_args() -> anyhow::Result<(OceanParams, Option<Bench>, bool, Option<f32>, Option<(f64, f64, f32)>)> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut overrides = Vec::new();
     let mut bench_frames = None;
     let mut bench_out = std::path::PathBuf::from("bench.json");
     let mut panel = false;
     let mut freeze = None;
+    let mut start_at = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().cloned().ok_or_else(|| anyhow::anyhow!("{a} needs a value"));
@@ -411,6 +420,12 @@ fn parse_args() -> anyhow::Result<(OceanParams, Option<Bench>, bool, Option<f32>
             "--bench-out" => bench_out = value()?.into(),
             "--panel" => panel = true,
             "--freeze-time" => freeze = Some(value()?.parse::<f32>()?),
+            "--start-at" => {
+                let v = value()?;
+                let n: Vec<f64> = v.split(',').map(str::parse).collect::<Result<_, _>>()?;
+                anyhow::ensure!(n.len() == 2 || n.len() == 3, "--start-at x,z[,heading]");
+                start_at = Some((n[0], n[1], n.get(2).copied().unwrap_or(30.0) as f32));
+            }
             other => anyhow::bail!("unknown argument {other:?}"),
         }
     }
@@ -424,11 +439,11 @@ fn parse_args() -> anyhow::Result<(OceanParams, Option<Bench>, bool, Option<f32>
             cpu_ms: Vec::new(),
         }
     });
-    Ok((params, bench, panel, freeze))
+    Ok((params, bench, panel, freeze, start_at))
 }
 
 fn main() -> anyhow::Result<()> {
-    let (params, bench, panel, freeze) = parse_args()?;
+    let (params, bench, panel, freeze, start_at) = parse_args()?;
     let el = EventLoop::new()?;
     // Wait, not Poll: request_redraw keeps frames coming, and a minimised window (which
     // renders nothing) then sleeps instead of spinning a core.
@@ -436,6 +451,7 @@ fn main() -> anyhow::Result<()> {
     let mut app = App::new(params, bench);
     app.show_panel = panel;
     app.freeze_time = freeze;
+    app.start_at = start_at;
     el.run_app(&mut app)?;
     Ok(())
 }

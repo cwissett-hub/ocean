@@ -2,7 +2,7 @@
 //! the raft at eye height), high (the v1 sunset framing, following the raft) and free fly.
 //! None of them goes below the water or into terrain.
 
-use glam::{Vec2, Vec3};
+use glam::{Quat, Vec2, Vec3};
 
 use crate::scene::camera::Camera;
 use crate::scene::raft::RaftBody;
@@ -11,6 +11,9 @@ pub const CAMERA_CLEARANCE_M: f32 = 0.6;
 /// Top of the logs above the raft's waterline.
 pub const DECK_HEIGHT_M: f32 = 0.15;
 const EYE_HEIGHT_M: f32 = 1.65;
+const DECK_SIDE_M: f32 = 1.05;
+const DECK_YAW_OUT_DEG: f32 = 5.0;
+const DECK_PITCH_DOWN_DEG: f32 = 5.0;
 const CHASE_BACK_M: f32 = 10.0;
 const CHASE_UP_M: f32 = 4.0;
 const CHASE_OMEGA: f32 = 3.0;
@@ -140,8 +143,12 @@ impl CameraController {
                 (pos, (raft.position + Vec3::Y - pos).normalize())
             }
             CameraMode::Deck => {
-                let eye = raft.position + raft.rotation * Vec3::new(0.0, DECK_HEIGHT_M + EYE_HEIGHT_M, -0.6);
-                (eye, raft.rotation * Vec3::Z)
+                // Standing at the port stern corner (+x is port), looking ahead just outboard of the
+                // sail (from the centreline it would fill the view).
+                let eye = raft.position + raft.rotation * Vec3::new(DECK_SIDE_M, DECK_HEIGHT_M + EYE_HEIGHT_M, -1.2);
+                let look = Quat::from_rotation_y(DECK_YAW_OUT_DEG.to_radians())
+                    * Quat::from_rotation_x(DECK_PITCH_DOWN_DEG.to_radians());
+                (eye, raft.rotation * (look * Vec3::Z))
             }
             CameraMode::High => {
                 let yaw = sun_azimuth_deg.to_radians();
@@ -238,6 +245,24 @@ mod tests {
         assert!((1.4..=1.9).contains(&above_deck), "eye {above_deck} above deck");
         let fwd = r.rotation * Vec3::Z;
         assert!(cam.forward.dot(fwd) > 0.99, "deck camera should look along the raft");
+    }
+
+    #[test]
+    fn deck_view_looks_past_the_sail() {
+        // The sail hangs at z ≈ 0.3–0.58, |x| ≤ 0.9, y 0.9–2.5 (raft_mesh.rs, raft-local).
+        let r = RaftBody::at(Vec3::ZERO, 0.0);
+        let mut c = CameraController::new(&r);
+        c.mode = CameraMode::Deck;
+        let cam = c.update(1.0 / 60.0, &r, 30.0, &FreeFlyInput::default(), &sea);
+        assert!(
+            cam.position.x.abs() < 1.25 && cam.position.z > -1.6,
+            "eye {} is off the raft",
+            cam.position
+        );
+        let t = (0.44 - cam.position.z) / cam.forward.z;
+        let at_sail = cam.position + cam.forward * t;
+        let blocked = at_sail.x.abs() <= 0.95 && (0.85..=2.55).contains(&at_sail.y);
+        assert!(!blocked, "view centre meets the sail at {at_sail}");
     }
 
     #[test]

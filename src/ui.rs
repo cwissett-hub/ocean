@@ -3,6 +3,33 @@
 
 use crate::gpu::timing::PassStats;
 use crate::params::{self, OceanParams, ReflectionMode};
+use crate::scene::cameras::CameraMode;
+use crate::scene::raft::RaftBody;
+
+/// Every control, for the settings panel and the README.
+pub const CONTROLS_HELP: &str = "Raft: A/D steer · W/S paddle · Space sail up/down · C camera
+Free fly: WASD move · Q/E down/up · right-drag look · Shift fast
+F1 settings · F2 fps · F5 reload shaders · Esc quit";
+
+/// What the panel shows about the raft.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RaftInfo {
+    pub speed: f32,
+    pub heading_deg: f32,
+    pub sail_up: bool,
+    pub grounded: bool,
+    pub camera: &'static str,
+}
+
+pub fn raft_info(body: &RaftBody, sail_up: bool, mode: CameraMode) -> RaftInfo {
+    RaftInfo {
+        speed: body.speed(),
+        heading_deg: body.heading.to_degrees().rem_euclid(360.0),
+        sail_up,
+        grounded: body.grounded,
+        camera: mode.label(),
+    }
+}
 
 pub struct OverlayInfo {
     pub adapter: String,
@@ -18,11 +45,24 @@ fn slider(ui: &mut egui::Ui, label: &str, v: &mut f32, range: (f32, f32), suffix
     ui.add(egui::Slider::new(v, range.0..=range.1).text(label).suffix(suffix));
 }
 
-pub fn settings_panel(ctx: &egui::Context, p: &mut OceanParams, rt_available: bool) {
+pub fn settings_panel(ctx: &egui::Context, p: &mut OceanParams, rt_available: bool, raft: Option<&RaftInfo>) {
     egui::Window::new("Settings")
         .default_pos([12.0, 12.0])
         .resizable(false)
         .show(ctx, |ui| {
+            if let Some(r) = raft {
+                ui.heading("Raft");
+                ui.label(format!(
+                    "{:.1} m/s ({:.1} kn) · heading {:.0}° · sail {} {}· camera {}",
+                    r.speed,
+                    r.speed * 1.943_844,
+                    r.heading_deg,
+                    if r.sail_up { "up" } else { "down" },
+                    if r.grounded { "· aground " } else { "" },
+                    r.camera
+                ));
+                ui.separator();
+            }
             ui.heading("Sea");
             slider(ui, "wind speed", &mut p.wind_speed, params::WIND_SPEED, " m/s");
             slider(ui, "wind direction", &mut p.wind_dir_deg, params::WIND_DIR_DEG, "°");
@@ -59,7 +99,7 @@ pub fn settings_panel(ctx: &egui::Context, p: &mut OceanParams, rt_available: bo
             if ui.button("reset to defaults").clicked() {
                 *p = OceanParams::default();
             }
-            ui.small("F1 settings · F2 overlay · F5 reload shaders · Esc quit");
+            ui.small(CONTROLS_HELP);
         });
 }
 
@@ -123,4 +163,47 @@ pub fn shader_errors(ctx: &egui::Context, errors: &[String]) {
                 ui.colored_label(egui::Color32::from_rgb(255, 120, 100), e);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene::cameras::CameraMode;
+    use crate::scene::raft::RaftBody;
+    use glam::Vec3;
+
+    #[test]
+    fn raft_info_formats_heading_and_speed() {
+        let mut r = RaftBody::at(Vec3::ZERO, -0.5);
+        r.velocity = Vec3::new(1.0, 0.3, -1.0);
+        let i = raft_info(&r, true, CameraMode::Deck);
+        assert!((0.0..360.0).contains(&i.heading_deg), "{}", i.heading_deg);
+        assert!(
+            (i.speed - 2f32.sqrt()).abs() < 1e-5,
+            "horizontal speed only: {}",
+            i.speed
+        );
+        assert!(i.sail_up && !i.grounded);
+        assert_eq!(i.camera, "deck");
+    }
+
+    #[test]
+    fn help_lists_every_control() {
+        for key in [
+            "A/D",
+            "W/S",
+            "Space",
+            "C",
+            "F1",
+            "F2",
+            "F5",
+            "Esc",
+            "WASD",
+            "Q/E",
+            "right-drag",
+            "Shift",
+        ] {
+            assert!(CONTROLS_HELP.contains(key), "missing {key}");
+        }
+    }
 }

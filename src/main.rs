@@ -220,9 +220,14 @@ impl Gfx {
         };
         let raw = self.egui_state.take_egui_input(&self.window);
         let rt = self.ctx.rt_available;
+        let raft = ui::raft_info(
+            self.renderer.raft(),
+            input.controls.sail_up,
+            self.renderer.camera_mode(),
+        );
         let out = self.egui_ctx.run_pass(raw, |ctx| {
             if show_panel {
-                ui::settings_panel(ctx, params, rt);
+                ui::settings_panel(ctx, params, rt, Some(&raft));
             }
             if params.show_overlay {
                 ui::overlay(ctx, &info, params.show_timings);

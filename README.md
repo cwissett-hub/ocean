@@ -42,8 +42,13 @@ otherwise uses the copies compiled in.
 
 | Key | |
 |---|---|
-| F1 | settings panel (wind, fetch, swell, foam, spray, sun, reflections, render scale, vsync) |
-| F2 | performance overlay (per-pass GPU timings) |
+| A / D | steer the raft |
+| W / S | paddle forward / back (push off a beach) |
+| Space | sail up / down |
+| C | camera: chase → deck → high → free fly |
+| WASD, Q / E, right-drag, Shift | free fly: move, down / up, look, fast |
+| F1 | settings panel (raft status, wind, fetch, swell, foam, spray, sun, reflections, render scale, vsync) |
+| F2 | fps readout (detailed GPU timings via the settings panel) |
 | F5 | reload shaders from disk (errors shown, last good shaders keep running) |
 | Esc | quit |
 

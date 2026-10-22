@@ -68,8 +68,9 @@ Material ids (G-buffer `material.g = id / 8`, decode `round(g * 8)`; `material.b
 - `pub fn islands_in_cell(seed: u64, cell: IVec2) -> Vec<IslandDesc>` (deterministic; cell (0,0) always contains the start island)
 - `pub fn islands_near(seed: u64, world: DVec2, radius_m: f64) -> Vec<IslandDesc>`
 - `pub fn start_island(seed: u64) -> IslandDesc` — 400 m from the world origin along `sun_direction(4°, 30°)` xz, radius 45 m, height 6 m, 2 palms.
-- `pub fn island_height(d: &IslandDesc, world: DVec2) -> f32` — dune heightfield above sea level 0, continuing as a beach slope underwater to the sea floor `SEABED_M = -40.0` at ~2.5·radius; returns `-1000.0` (no seabed) beyond 3·radius.
-- `pub fn seabed_height(islands: &[IslandDesc], world: DVec2) -> f32` — max over islands.
+- `pub const SEA_DEPTH_M: f32 = 25.0;` and `pub fn sea_floor(seed: u64, world: DVec2) -> f32` — the open seabed everywhere: −25 m ± ~4 m of smooth sand undulation (spec change 2026-10-22).
+- `pub fn island_height(d: &IslandDesc, world: DVec2) -> f32` — dune heightfield above sea level 0, continuing as a beach slope underwater to −SEA_DEPTH_M at ~2.5·radius; returns `f32::NEG_INFINITY` beyond 3·radius (no contribution).
+- `pub fn seabed_height(seed: u64, islands: &[IslandDesc], world: DVec2) -> f32` — max of `sea_floor` and every island.
 
 - [ ] **Step 1: Write failing tests** (in-module):
   - `placement_is_deterministic` — same seed+cell → identical lists; different seed → different.
@@ -77,7 +78,8 @@ Material ids (G-buffer `material.g = id / 8`, decode `round(g * 8)`; `material.b
   - `lone_islands_are_about_two_km_apart` — over cells −8..8², taking each site's centroid: mean nearest-neighbour distance between sites in 1500–3000 m; no two sites closer than 700 m.
   - `archipelagos_exist_with_close_members` — 8–25 % of sites have 3–6 islands; members pairwise 100–400 m apart (nearest member ≤ 400, all ≥ 100).
   - `island_sizes_in_range` — radius 15–75, height ≤ 8.
-  - `height_profile_is_a_beach` — `island_height` at centre > 1 m, at radius ≈ 0 (±0.5 m), decreasing monotonically along a ray from the shore to 2.5·radius, reaches ≤ SEABED_M + 1, returns −1000 past 3·radius.
+  - `height_profile_is_a_beach` — `island_height` at centre > 1 m, at radius ≈ 0 (±0.5 m), decreasing monotonically along a ray from the shore to 2.5·radius, reaches ≤ −SEA_DEPTH_M + 1, no contribution past 3·radius.
+  - `sea_floor_is_20_to_30_m_deep_everywhere` — over a 20 km grid, `sea_floor` in −30..−20 and smooth (slope < 0.15).
   - `rebase_only_beyond_threshold_and_in_whole_periods` — `rebase_for((4000, 0))` is None; `rebase_for((5000,-6000))` = Some(s) with s/1024 integral and |focus − s| ≤ 1024 per axis.
   - `rebase_preserves_wave_phase` — for a `CpuOcean` field, sampling at local p and at p − s after a rebase by s gives identical heights (every cascade size divides 1024).
 - [ ] **Step 2:** `cargo test --lib world` → FAIL (missing items).

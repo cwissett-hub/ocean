@@ -122,3 +122,11 @@ experience — leisurely sailing, not an arcade game.
 - Camera smoothing and free-fly controls.
 - How depth reaches the ocean shaders and how far wave attenuation extends.
 - Island streaming distances, LOD, and generation threading.
+
+## Change 2026-10-22 (user): shallow sea with a visible seabed everywhere
+
+The whole sea is about **20–30 m deep** with a sandy seabed visible through the water
+everywhere (gently undulating, a few metres of relief), not just around islands; islands rise
+from it. Water shading always refracts the seabed (fading with depth); waves use finite-depth
+dispersion for the mean depth (ω² = g·k·tanh(k·h), h ≈ 25 m). Shore wave attenuation still only
+applies where it is shallower than ~10 m.

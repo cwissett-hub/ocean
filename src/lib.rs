@@ -6,3 +6,4 @@ pub mod render;
 pub mod scene;
 pub mod ui;
 pub mod waves;
+pub mod world;

@@ -1,6 +1,7 @@
 pub mod bench;
 pub mod clock;
 pub mod gpu;
+pub mod input;
 pub mod params;
 pub mod render;
 pub mod scene;

@@ -29,6 +29,7 @@ fn tex_entry(binding: u32, sample_type: wgpu::TextureSampleType) -> wgpu::BindGr
 }
 
 impl ShadePass {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         d: &wgpu::Device,
         lib: &ShaderLibrary,
@@ -117,6 +118,7 @@ impl ShadePass {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn bind(
         d: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,

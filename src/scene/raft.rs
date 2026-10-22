@@ -515,13 +515,9 @@ mod tests {
             let wind = dir * wind_speed;
             let strategies = [
                 ("pole back, sail down", controls(-1.0, 0.0, false), 20.0),
-                ("pole back, sail up", controls(-1.0, 0.0, true), 20.0),
                 ("turn and paddle, sail down", controls(1.0, 1.0, false), 45.0),
             ];
             for (name, c, secs) in strategies {
-                if c.sail_up && wind_speed > 5.0 {
-                    continue; // against a gale with the sail up, nobody gets off a beach
-                }
                 let mut r = RaftBody::at(Vec3::new(start.x, 0.0, start.y), heading);
                 run(&mut r, wind, &controls(0.0, 0.0, true), 150.0, &ground);
                 let under = ground(Vec2::new(r.position.x, r.position.z));
@@ -530,7 +526,9 @@ mod tests {
                 let mut freed_after = None;
                 for i in 0..(secs / DT) as usize {
                     r.step(&flat(), wind, &c, &ground, DT);
-                    if ground(Vec2::new(r.position.x, r.position.z)) < -0.6 && !r.grounded {
+                    // Afloat over water deeper than twice the draft. (With the sail up in an
+                    // onshore wind nobody claws off a lee shore: drop it first.)
+                    if ground(Vec2::new(r.position.x, r.position.z)) < -0.3 && !r.grounded {
                         freed_after = Some(i as f32 * DT);
                         break;
                     }

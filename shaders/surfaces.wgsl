@@ -145,6 +145,13 @@ fn shade_object(p: vec3<f32>, n: vec3<f32>, id: u32, param: f32) -> vec3<f32> {
         albedo = s.albedo;
         variance = s.variance;
     }
+    // Sand the swash has just left is dark and glossy, drying over a few seconds.
+    var sand_wet = 0.0;
+    if (id == MAT_SAND) {
+        sand_wet = sand_wetness(p.y, swash_phase(p.xz), swash_amplitude());
+        albedo = mix(material_albedo(MAT_SAND, 1.0), material_albedo(MAT_SAND, 0.0) * 0.85, sand_wet);
+        variance = mix(variance, 0.05, sand_wet * sand_wet);
+    }
     let n_l = max(dot(n, sun), 0.0);
     let n_v = max(dot(n, v), 1e-4);
     let ambient = sky_irradiance() * (0.6 + 0.4 * n.y) + sky_radiance(normalize(vec3<f32>(-sun.x, 0.1, -sun.z))) * PI * 0.15 * max(-n.y, 0.0);
@@ -165,6 +172,15 @@ fn shade_object(p: vec3<f32>, n: vec3<f32>, id: u32, param: f32) -> vec3<f32> {
     let blur = mix(0.03, 0.6, clamp(alpha2, 0.0, 1.0));
     let env = sky_seen * mix(0.3, 1.0, smoothstep(-blur, blur, rr.y));
     col += env * f * select(0.5, 0.15, alpha2 > 0.3);
+    if (id == MAT_SAND) {
+        // A few quartz grains on dry sand catch the sun: 1 cm cells, one grain in ~200 tilted
+        // to mirror the sun at the eye. Fades with distance before it can alias into noise.
+        let cell = floor(p.xz * 100.0);
+        let tilt = vec3<f32>(wood_hash(cell) - 0.5, 0.0, wood_hash(cell + 17.0) - 0.5) * 0.5;
+        let grain = normalize(n + tilt);
+        let catch_sun = smoothstep(0.995, 0.999, dot(grain, h)) * step(0.995, wood_hash(cell + 41.0));
+        col += e_sun * catch_sun * 6.0 * (1.0 - sand_wet) * smoothstep(20.0, 4.0, dist) * step(0.0, n_l);
+    }
     if (id == MAT_SAIL || id == MAT_PALM_FROND) {
         // Thin cloth / leaves: light through them toward the eye.
         let through = pow(max(dot(-v, sun), 0.0), 4.0);

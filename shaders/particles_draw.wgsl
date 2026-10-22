@@ -105,10 +105,10 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     var alpha: f32;
     if (spray) {
         // A clump of droplets: a soft core broken into blobs by two octaves of noise.
-        let s = in.uv * 2.2 + in.seed * 37.0;
+        let s = in.uv * 3.0 + in.seed * 37.0;
         let blobs = value_noise(s) * 0.65 + value_noise(s * 2.7 + 5.0) * 0.35;
         let body = pow(1.0 - r2, 1.5);
-        alpha = smoothstep(0.35, 0.75, blobs * 0.6 + body * 0.7) * body * 0.55;
+        alpha = smoothstep(0.4, 0.8, blobs * 0.6 + body * 0.7) * body * 0.45;
     } else {
         alpha = pow(1.0 - r2, 3.0) * 0.018;
         // Mist right in front of the camera would read as a flat disc.

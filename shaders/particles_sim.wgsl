@@ -106,7 +106,7 @@ fn spawn(kind: u32, pos: vec3<f32>, vel: vec3<f32>, seed: u32) {
         q.size = 0.0;
     } else if (kind == KIND_SPRAY) {
         q.max_life = 1.2 + 1.6 * hash(seed + 7u);
-        q.size = 0.25 + 0.5 * hash(seed + 11u);
+        q.size = 0.12 + 0.25 * hash(seed + 11u);
     } else {
         q.max_life = 5.0 + 5.0 * hash(seed + 7u);
         q.size = 4.0 + 6.0 * hash(seed + 11u);

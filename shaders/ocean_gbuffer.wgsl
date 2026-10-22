@@ -77,16 +77,19 @@ fn foam_coverage(foam: f32, p: vec2<f32>, footprint: f32) -> f32 {
     return smoothstep(0.0, 1.0, clamp(foam * 2.2 - (1.0 - detail) * 1.1, 0.0, 1.0)) * distance_fade;
 }
 
-// The surf line: a band of foam along the beach where the water is under ~1.5 m deep,
-// washing up and back with a slow rhythm and broken into lace like the open-sea foam.
+// The surf line: foam in the thin water of the swash, thickest at its leading edge while it
+// runs up the beach, broken into lace like the open-sea foam.
 fn surf(p: vec2<f32>, depth: f32, footprint: f32) -> f32 {
-    let band = smoothstep(1.5, 0.2, depth) * step(-0.05, depth);
     let t = frame.cam_pos.w;
-    let along = value_noise(p * 0.04) * 6.0;
-    let wash = 0.5 + 0.5 * sin(t * 0.9 - depth * 3.0 + along);
+    // Water over this spot of sand (or sea bottom), m.
+    let thick = swash_height(p) + depth;
+    let band = smoothstep(0.0, 0.02, thick) * smoothstep(0.22, 0.0, thick);
+    let running_up = max(cos(swash_phase(p)), 0.0);
+    let edge = smoothstep(0.25, 0.0, thick);
+    let wash = mix(0.3, 1.0, running_up * edge + 0.4 * (1.0 - edge));
     let lace = value_noise(p * 1.7 + vec2<f32>(t * 0.15, 0.0)) * 0.6 + value_noise(p * 5.3) * 0.4;
     let detail = mix(lace, 0.6, smoothstep(0.2, 1.0, footprint));
-    return clamp(band * mix(0.55, 1.2, wash) * 2.2 - (1.0 - detail) * 1.3, 0.0, 1.0);
+    return clamp(band * mix(0.4, 1.1, wash) * 1.8 - (1.0 - detail) * 1.4, 0.0, 1.0);
 }
 
 fn level_center(cam_xz: vec2<f32>, cell: f32) -> vec2<f32> {
@@ -141,7 +144,10 @@ fn vs_ocean(@builtin(vertex_index) vi: u32, @builtin(instance_index) level: u32)
     // The swell dies out over the last 10 m to the shore and never climbs the beach.
     // The raft's own waves (bow wave, the dip along the hull, its Kelvin wake) ride on top.
     d.y += wake_height(wake, frame.wake, p);
-    d *= wave_attenuation(water_depth(p));
+    let depth_here = water_depth(p);
+    d *= wave_attenuation(depth_here);
+    // At the shore the swash runs up the beach and back (the sand shading knows when it was wet).
+    d.y += swash_height(p) * smoothstep(1.5, 0.2, depth_here);
 
     var o: OceanOut;
     o.world = vec3<f32>(p.x + d.x, d.y, p.y + d.z);

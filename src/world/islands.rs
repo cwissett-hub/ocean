@@ -140,17 +140,33 @@ pub fn island_height(d: &IslandDesc, world: DVec2) -> f32 {
     if r > 3.0 {
         return f32::NEG_INFINITY;
     }
+    // Distance past the waterline, m (negative inland). The swash zone around it shelves
+    // gently (FORESHORE_SLOPE) from a low berm down to the foreshore's foot, then the beach
+    // drops to the sea floor by 2.5 radii.
+    let s = (r - 1.0) * d.radius as f64;
+    let shore = -FORESHORE_SLOPE * s;
     if r <= 1.0 {
         let base = d.height as f64 * (1.0 - r * r);
         let t = ((1.0 - r) / 0.5).clamp(0.0, 1.0);
         let fade = t * t * (3.0 - 2.0 * t);
         let local = world - d.center;
         let dunes = 0.6 * value_noise(d.seed, local / 11.0) + 0.4 * value_noise(d.seed ^ 7, local / 4.5);
-        return (base + 0.3 * d.height as f64 * dunes * fade).max(0.0) as f32;
+        let dune = (base + 0.3 * d.height as f64 * dunes * fade).max(0.0);
+        return dune.max(shore.min(BERM_M)) as f32;
     }
-    let beach = ((r - 1.0) / 1.5).min(1.0);
-    -(SEA_DEPTH_M * beach as f32)
+    if s <= FORESHORE_M {
+        return shore as f32;
+    }
+    let foot = -FORESHORE_SLOPE * FORESHORE_M;
+    let run = (1.5 * d.radius as f64 - FORESHORE_M).max(1.0);
+    (foot - (SEA_DEPTH_M as f64 + foot) * ((s - FORESHORE_M) / run)).max(-(SEA_DEPTH_M as f64)) as f32
 }
+
+/// The swash zone: a gentle foreshore this many m seaward of the waterline, sloping 1 in 16.
+const FORESHORE_M: f64 = 10.0;
+const FORESHORE_SLOPE: f64 = 0.06;
+/// The beach rises gently inland to a berm this high before the dunes take over.
+const BERM_M: f64 = 0.45;
 
 /// The open sea floor: 25 m down with a few metres of smooth sandy relief.
 pub fn sea_floor(seed: u64, world: DVec2) -> f32 {
@@ -301,6 +317,38 @@ mod tests {
         }
         assert!(at(2.5 * d.radius as f64) <= -SEA_DEPTH_M + 1.0);
         assert_eq!(at(3.1 * d.radius as f64), f32::NEG_INFINITY);
+    }
+
+    #[test]
+    fn swash_zone_is_gentle() {
+        // Real beaches shelve gently where the swash runs (slope ~0.05–0.1); a steep waterline
+        // leaves no room for the wet band the swash leaves behind.
+        for d in [
+            start_island(WORLD_SEED),
+            IslandDesc {
+                radius: 15.0,
+                height: 2.0,
+                ..start_island(WORLD_SEED)
+            },
+        ] {
+            let dir = DVec2::new(0.6, 0.8);
+            let at = |r: f64| island_height(&d, d.center + dir * r);
+            let mut lo = None;
+            let mut hi = None;
+            let mut r = 0.5 * d.radius as f64;
+            while r < 2.5 * d.radius as f64 {
+                let h = at(r);
+                if hi.is_none() && h < 0.3 {
+                    hi = Some(r);
+                }
+                if lo.is_none() && h < -0.5 {
+                    lo = Some(r);
+                }
+                r += 0.05;
+            }
+            let width = lo.unwrap() - hi.unwrap();
+            assert!(width >= 8.0, "radius {}: swash zone only {width:.1} m wide", d.radius);
+        }
     }
 
     #[test]

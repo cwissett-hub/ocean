@@ -537,15 +537,21 @@ impl Renderer {
         self.prev_view_proj = None;
     }
 
-    /// Plans island streaming around the raft, drops far islands, and uploads a few finished
-    /// meshes (more wait for later frames, so an archipelago never causes a hitch).
+    /// Plans island streaming and the seabed map around the camera (what can be seen — free
+    /// fly can be far from the raft) while keeping the raft's islands known for its terrain;
+    /// drops far islands and uploads a few finished meshes (more wait for later frames, so an
+    /// archipelago never causes a hitch).
     fn stream_islands(&mut self) {
-        let focus = self
+        let raft = self
             .origin
             .to_world(Vec2::new(self.raft.position.x, self.raft.position.z));
-        self.streamer.update(focus);
+        let camera = self
+            .cameras
+            .last_position()
+            .map_or(raft, |p| self.origin.to_world(Vec2::new(p.x, p.z)));
+        self.streamer.update(camera, raft);
         self.seabed
-            .update(&self.queue, WORLD_SEED, focus, self.streamer.known());
+            .update(&self.queue, WORLD_SEED, camera, self.streamer.known());
         self.query.set_seabed(self.seabed.params(&self.origin));
         for id in self.streamer.take_unloads() {
             if let Some(isle) = self.islands.remove(&id) {

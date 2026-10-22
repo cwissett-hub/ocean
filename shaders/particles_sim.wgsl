@@ -183,7 +183,11 @@ fn update(@builtin(global_invocation_id) id: vec3<u32>) {
     if (q.life <= 0.0) {
         return;
     }
-    q.pos -= vec3<f32>(sp.shift.x, 0.0, sp.shift.y);
+    // Origin rebase: move particles from earlier frames; ones spawned this frame (not yet aged)
+    // were placed in the new coordinates already.
+    if (q.life < q.max_life) {
+        q.pos -= vec3<f32>(sp.shift.x, 0.0, sp.shift.y);
+    }
     if (q.kind == KIND_FOAM_MARK) {
         deposit(q.pos.xz, MARK_DEPOSIT);
         q.life = 0.0;

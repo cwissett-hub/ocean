@@ -14,6 +14,8 @@ pub const LOAD_M: f64 = 4000.0;
 pub const UNLOAD_M: f64 = 4500.0;
 pub const LOD0_IN_M: f64 = 1500.0;
 pub const LOD1_OUT_M: f64 = 1700.0;
+/// Islands this close to the raft are always known (its terrain), wherever the camera is.
+const RAFT_TERRAIN_M: f64 = 500.0;
 
 #[derive(Debug, Default, PartialEq)]
 pub struct StreamPlan {
@@ -86,7 +88,8 @@ pub struct IslandStreamer {
     done: mpsc::Receiver<ReadyIsland>,
     /// Islands with a mesh built or being built, and that mesh's LOD.
     requested: HashMap<u64, u32>,
-    /// Every island within UNLOAD_M of the focus (for terrain height, with or without a mesh).
+    /// Every island within UNLOAD_M of the camera or near the raft (for terrain height, with
+    /// or without a mesh).
     known: Vec<IslandDesc>,
     unloads: Vec<u64>,
     max_new: usize,
@@ -119,10 +122,23 @@ impl IslandStreamer {
         }
     }
 
-    /// Re-plans around `focus` (world): queues mesh jobs and collects unloads.
-    pub fn update(&mut self, focus: DVec2) {
-        self.known = islands_near(self.seed, focus, UNLOAD_M);
-        let plan = plan_streaming(&self.requested, &self.known, focus, self.max_new);
+    /// Re-plans meshes around `camera` (world; what can be seen) and keeps the islands around
+    /// `raft` known for its terrain, wherever the camera has flown.
+    pub fn update(&mut self, camera: DVec2, raft: DVec2) {
+        let mut known = islands_near(self.seed, camera, UNLOAD_M);
+        for d in islands_near(self.seed, raft, RAFT_TERRAIN_M) {
+            if !known.iter().any(|k| k.id == d.id) {
+                known.push(d);
+            }
+        }
+        self.known = known;
+        let visible: Vec<IslandDesc> = self
+            .known
+            .iter()
+            .filter(|d| (d.center - camera).length() <= UNLOAD_M + 3.0 * d.radius as f64)
+            .cloned()
+            .collect();
+        let plan = plan_streaming(&self.requested, &visible, camera, self.max_new);
         for id in plan.unload {
             self.requested.remove(&id);
             self.unloads.push(id);
@@ -226,6 +242,32 @@ mod tests {
                     .is_empty()
             );
         }
+    }
+
+    #[test]
+    fn meshes_follow_the_camera_while_terrain_follows_the_raft() {
+        use crate::world::islands::{WORLD_SEED, start_island};
+        let isle = start_island(WORLD_SEED);
+        let mut s = IslandStreamer::new(WORLD_SEED);
+        // Free fly 12 km away from a raft sitting next to the start island.
+        let camera = DVec2::new(12_000.0, -3000.0);
+        s.update(camera, isle.center - DVec2::new(0.0, 60.0));
+        assert!(s.terrain_height(isle.center) > 1.0, "the raft's island must stay solid");
+        assert!(
+            s.known().iter().any(|d| (d.center - camera).length() < LOAD_M),
+            "islands around the camera are known"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut got = Vec::new();
+        while got.is_empty() && std::time::Instant::now() < deadline {
+            s.update(camera, isle.center);
+            got.extend(s.take_ready());
+        }
+        assert!(
+            got.iter().all(|r| (r.desc.center - camera).length() < LOAD_M),
+            "meshes near the camera"
+        );
+        assert!(!got.is_empty(), "nothing meshed near the camera");
     }
 
     #[test]

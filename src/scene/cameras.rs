@@ -103,6 +103,11 @@ impl CameraController {
     }
 
     /// Shifts every stored position by −`shift` (world origin rebase).
+    /// Where the camera was last frame (local), if it has been placed yet.
+    pub fn last_position(&self) -> Option<Vec3> {
+        self.last.as_ref().map(|c| c.position)
+    }
+
     pub fn rebase(&mut self, shift: Vec2) {
         let s = Vec3::new(shift.x, 0.0, shift.y);
         self.free_pos -= s;

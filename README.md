@@ -20,7 +20,7 @@ through procedurally generated desert islands at 60 fps in a 1280×720 window.
 - **Islands**: sparse desert islands a couple of kilometres apart, sometimes in archipelagos,
   with dunes, beaches shelving into the sea floor and palm trees; deterministic from a seed,
   streamed in and out around the raft on a worker thread. Waves calm over the shallows and
-  break into a surf line at the beach.
+  leave a line of foam at the beach.
 - **Raft**: seven driftwood logs, a mast and a square sail. It rides the GPU wave-height query
   (heaving, pitching and rolling with the swell), sails by the wind, paddles, beaches on sand,
   throws bow spray when it slams into a wave and leaves a foam wake.

@@ -6,6 +6,7 @@ use glam::{Mat4, Quat, Vec2, Vec3};
 
 use crate::render::particles::{KIND_FOAM_MARK, KIND_SPRAY, SpawnRequest};
 use crate::waves::query::WaterSample;
+use crate::waves::spectrum::G;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct RaftControls {
@@ -55,11 +56,11 @@ const MAX_SUBSTEP_S: f32 = 1.0 / 120.0;
 /// Ground contact: stiff spring along the terrain normal, damping, Coulomb friction.
 const CONTACT_K: f32 = 400.0;
 const CONTACT_DAMPING: f32 = 40.0;
-const GROUND_MU: f32 = 1.2;
+const GROUND_MU: f32 = 0.6;
 /// Logs ploughing into sand: extra drag per metre of penetration.
 const PLOUGH_DRAG: f32 = 30.0;
 /// Aground, the paddle becomes a pole pushed against the sand.
-const PUSH_OFF_GAIN: f32 = 30.0;
+const PUSH_OFF_GAIN: f32 = 80.0;
 
 /// Force of a self-trimming square sail in the apparent wind (both world xz).
 pub fn sail_force(apparent_wind: Vec2, forward: Vec2, sail_up: bool) -> Vec2 {
@@ -166,14 +167,21 @@ impl RaftBody {
             let mut lift = 0.0;
             let mut torque = Vec3::ZERO;
             let mut count = 0.0;
+            let mut afloat = 0.0;
             for (s, o) in water.iter().zip(RAFT_SAMPLE_OFFSETS) {
                 if !(s.height.is_finite() && s.velocity.is_finite()) {
                     continue;
                 }
                 let r = self.rotation * o;
                 let vy = self.velocity.y + self.angular_velocity.cross(r).y;
-                let f = HEAVE_OMEGA * HEAVE_OMEGA * (s.height - (self.position.y + r.y))
-                    + 2.0 * HEAVE_ZETA * HEAVE_OMEGA * (s.velocity.y - vy);
+                let immersion = s.height - (self.position.y + r.y);
+                // Out of the water a log only weighs g; the spring must not pull it down harder
+                // (that pinned a beached raft to the sand).
+                let f = (HEAVE_OMEGA * HEAVE_OMEGA * immersion + 2.0 * HEAVE_ZETA * HEAVE_OMEGA * (s.velocity.y - vy))
+                    .max(-G);
+                if immersion > -RAFT_DRAFT_M {
+                    afloat += 1.0;
+                }
                 lift += f;
                 torque += r.cross(Vec3::new(0.0, f, 0.0));
                 count += 1.0;
@@ -194,7 +202,10 @@ impl RaftBody {
             } else {
                 1.0
             };
-            let mut force = sail_force(apparent, fwd, c.sail_up)
+            // A beached raft is driven only as much as it still floats: the wind must not
+            // carry it up the dunes.
+            let floating = (afloat / RAFT_SAMPLE_OFFSETS.len() as f32).max(if self.grounded { 0.0 } else { 1.0 });
+            let mut force = sail_force(apparent, fwd, c.sail_up) * floating
                 + apparent * apparent.length() * WINDAGE_K
                 + fwd * (paddle * PADDLE_THRUST * pole);
             let (vf, vl) = (v.dot(fwd), v.dot(side));
@@ -228,6 +239,9 @@ impl RaftBody {
             } else {
                 tilt
             };
+            // Keep only the swing (where "up" points): composing small pitch and roll steps
+            // leaves a net twist about the vertical, and yaw belongs to `heading` alone.
+            let tilt = Quat::from_rotation_arc(Vec3::Y, (tilt * Vec3::Y).normalize());
             self.rotation = (Quat::from_rotation_y(self.heading) * tilt).normalize();
         }
     }
@@ -507,6 +521,96 @@ mod tests {
                 }
             }
             assert!(freed, "{c:?} did not free the raft (z {})", r.position.z);
+        }
+    }
+
+    #[test]
+    fn beached_on_the_real_island_in_any_wind_it_can_be_got_off() {
+        // Sail onto the start island's windward beach in an onshore wind, then get off it:
+        // poling back (sail down) or turning round and paddling. Seen by review: in 10 m/s
+        // the raft was stranded for good, in 25 m/s it sailed up the dunes.
+        use crate::world::islands::{WORLD_SEED, seabed_height, start_island};
+        let isle = start_island(WORLD_SEED);
+        let ground = |p: Vec2| seabed_height(WORLD_SEED, std::slice::from_ref(&isle), p.as_dvec2());
+        let dir = isle.center.normalize().as_vec2();
+        let start = isle.center.as_vec2() - dir * 120.0;
+        let heading = dir.x.atan2(dir.y);
+        for wind_speed in [5.0f32, 10.0, 25.0] {
+            let wind = dir * wind_speed;
+            let strategies = [
+                ("pole back, sail down", controls(-1.0, 0.0, false), 20.0),
+                ("pole back, sail up", controls(-1.0, 0.0, true), 20.0),
+                ("turn and paddle, sail down", controls(1.0, 1.0, false), 45.0),
+            ];
+            for (name, c, secs) in strategies {
+                if c.sail_up && wind_speed > 5.0 {
+                    continue; // against a gale with the sail up, nobody gets off a beach
+                }
+                let mut r = RaftBody::at(Vec3::new(start.x, 0.0, start.y), heading);
+                run(&mut r, wind, &controls(0.0, 0.0, true), 150.0, &ground);
+                let under = ground(Vec2::new(r.position.x, r.position.z));
+                assert!(r.grounded, "{wind_speed} m/s: never reached the beach");
+                assert!(under < 0.6, "{wind_speed} m/s: sailed {under} m up the island");
+                let mut freed_after = None;
+                for i in 0..(secs / DT) as usize {
+                    r.step(&flat(), wind, &c, &ground, DT);
+                    if ground(Vec2::new(r.position.x, r.position.z)) < -0.6 && !r.grounded {
+                        freed_after = Some(i as f32 * DT);
+                        break;
+                    }
+                }
+                assert!(
+                    freed_after.is_some(),
+                    "{wind_speed} m/s, {name}: still aground after {secs} s"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hull_keeps_its_heading_over_a_long_rough_sail() {
+        // Composing many small pitch and roll steps leaves a net twist about the vertical;
+        // unless it is removed, the drawn hull drifts off the heading (review: +20–40°/hour).
+        let waves: Vec<(Vec2, f32, f32)> = (0..16)
+            .map(|i| {
+                let a = i as f32 * 2.399;
+                let k = 0.05 + 0.03 * (i % 5) as f32;
+                (Vec2::new(a.sin(), a.cos()) * k, (G * k).sqrt(), i as f32 * 1.7)
+            })
+            .collect();
+        let water_at = |p: Vec2, t: f32| -> (f32, f32) {
+            waves.iter().fold((0.0, 0.0), |(h, v), (k, w, ph)| {
+                let phase = k.dot(p) - w * t + ph;
+                (h + 0.18 * phase.cos(), v + 0.18 * w * phase.sin())
+            })
+        };
+        for heading in [0.0f32, 2.4] {
+            let mut r = RaftBody::at(Vec3::ZERO, heading);
+            let mut worst = 0.0f32;
+            let mut worst_twist = 0.0f32;
+            for i in 0..(3600.0 / DT) as usize {
+                let t = i as f32 * DT;
+                let mut w = flat();
+                for (s, p) in w.iter_mut().zip(r.sample_points()) {
+                    let (h, v) = water_at(p, t);
+                    s.height = h;
+                    s.velocity.y = v;
+                }
+                r.step(&w, Vec2::ZERO, &controls(0.0, 0.0, false), &deep, DT);
+                let f = r.rotation * Vec3::Z;
+                let drawn = f.x.atan2(f.z);
+                let off =
+                    (drawn - r.heading + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+                worst = worst.max(off.abs().to_degrees());
+                // Twist of the tilt about the vertical (swing-twist split): should stay zero.
+                let q = r.tilt();
+                worst_twist = worst_twist.max((2.0 * q.y.atan2(q.w)).abs().to_degrees());
+            }
+            assert!(worst < 2.0, "heading {heading}: hull drifted {worst}° off its heading");
+            assert!(
+                worst_twist < 0.5,
+                "heading {heading}: tilt twisted {worst_twist}° about the vertical"
+            );
         }
     }
 

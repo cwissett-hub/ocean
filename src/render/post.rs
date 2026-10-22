@@ -1,11 +1,12 @@
 //! Bloom, exposure and AgX tonemapping from the HDR target to the swapchain.
 
 /// Exposure value for the scene at this sun elevation (lower = brighter image). The sky is
-/// computed for unit solar illuminance, so twilight needs several stops more than noon.
+/// computed for unit solar illuminance, so the frame only brightens by about a stop and a half
+/// from civil twilight to a high sun; past ~25° the exposure stays put.
 pub fn exposure_ev(sun_elevation_deg: f32) -> f32 {
-    let t = ((sun_elevation_deg + 6.0) / 66.0).clamp(0.0, 1.0);
+    let t = ((sun_elevation_deg + 6.0) / 30.0).clamp(0.0, 1.0);
     let s = t * t * (3.0 - 2.0 * t);
-    -3.5 + 6.5 * s
+    -3.5 + 1.5 * s
 }
 
 pub fn exposure_multiplier(ev: f32) -> f32 {
@@ -293,6 +294,22 @@ mod tests {
             assert!(ev >= prev - 1e-6, "ev dropped at {el}: {prev} -> {ev}");
             prev = ev;
             el += 0.5;
+        }
+    }
+
+    #[test]
+    fn daylight_is_not_underexposed() {
+        // Measured: with the sky in units of solar illuminance the frame only brightens about
+        // one stop from a 4° sunset to a high sun (mean luma 77 at EV −3.1 vs 78–98 at EV −2
+        // for 25–90°). The old curve took 6 stops away and noon rendered black.
+        assert!(
+            (exposure_ev(4.0) + 3.1).abs() < 0.05,
+            "sunset look changed: {}",
+            exposure_ev(4.0)
+        );
+        for el in [25.0, 45.0, 60.0, 90.0] {
+            let ev = exposure_ev(el);
+            assert!((-2.3..=-1.7).contains(&ev), "EV {ev} at {el}°");
         }
     }
 

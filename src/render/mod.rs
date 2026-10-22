@@ -9,3 +9,4 @@ pub mod rt_scene;
 pub mod seabed;
 pub mod shade;
 pub mod sky;
+pub mod water_optics;

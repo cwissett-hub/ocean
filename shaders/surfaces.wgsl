@@ -5,6 +5,8 @@ const WATER_F0: f32 = 0.02;
 // Seawater absorption and scattering, 1/m (pure-water absorption + a little particulate).
 const WATER_ABSORB: vec3<f32> = vec3<f32>(0.45, 0.065, 0.025);
 const WATER_SCATTER: vec3<f32> = vec3<f32>(0.012, 0.018, 0.026);
+// n² for seawater: radiance leaving the water is divided by it.
+const WATER_N2: f32 = 1.78;
 const CREST_TINT: vec3<f32> = vec3<f32>(0.08, 0.55, 0.42);
 const FOAM_ALBEDO: f32 = 0.8;
 
@@ -30,12 +32,19 @@ fn aerial(col: vec3<f32>, view: vec3<f32>, dist_m: f32) -> vec3<f32> {
     return col * t + horizon * (vec3<f32>(1.0) - t);
 }
 
-// Light scattered back up out of deep water (single scattering), before the (1 − F) factor.
+// Upwelling radiance just above the surface per unit downwelling irradiance just below it,
+// for an infinitely deep column, 1/sr (Gordon et al. 1988; mirrors
+// render::water_optics::water_column_reflectance). Clear seawater is dim and blue: most light
+// that enters is absorbed, which is what makes the sea dark and its reflections stand out.
+fn water_column_reflectance() -> vec3<f32> {
+    let bb = WATER_SCATTER * 0.5;
+    let u = bb / max(WATER_ABSORB + bb, vec3<f32>(1e-6));
+    return (0.0949 + 0.0794 * u) * u / WATER_N2;
+}
+
+// Light scattered back up out of deep water, before the (1 − F) factor.
 fn deep_water_upwelling() -> vec3<f32> {
-    let sun = frame.sun_dir.xyz;
-    let albedo = WATER_SCATTER / (WATER_ABSORB + WATER_SCATTER);
-    let e_in = sun_transmittance() * max(sun.y, 0.0) * (1.0 - fresnel(max(sun.y, 0.0))) + sky_irradiance() * 0.94;
-    return e_in * albedo / (4.0 * PI) * 1.3;
+    return underwater_irradiance() * water_column_reflectance();
 }
 
 // Downwelling light just below the surface (sun through the surface plus sky).

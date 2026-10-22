@@ -166,6 +166,7 @@ fn fs_ocean(in: OceanOut) -> GBufferOut {
     // 1 km, so the shallows are applied here rather than when it is accumulated).
     let foam = textureSampleLevel(foam_tex, samp, in.grid_xz / frame.sizes.x, 0.0).r * att;
     o.material = vec4<f32>(max(foam_coverage(foam, in.grid_xz, footprint), surf(in.grid_xz, depth, footprint)), 0.0, 0.0, 0.0);
-    o.motion = prev_px - in.pos.xy;
+    // Motion of the unjittered image (TAA jitters the projection, not the scene).
+    o.motion = prev_px - (in.pos.xy - frame.jitter.xy);
     return o;
 }

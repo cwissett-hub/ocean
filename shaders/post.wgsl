@@ -3,7 +3,8 @@
 struct PostParams {
     exposure: f32,
     bloom_strength: f32,
-    _pad: vec2<f32>,
+    sharpness: f32,   // contrast-adaptive sharpening, 0..1
+    frame: f32,       // animates the dither
 };
 
 @group(0) @binding(0) var src: texture_2d<f32>;
@@ -98,11 +99,40 @@ fn punchy(col: vec3<f32>) -> vec3<f32> {
     return pow(max(luma + 1.25 * (col - luma), vec3<f32>(0.0)), vec3<f32>(1.15));
 }
 
+// Display-encoded (pre-EOTF) colour of the scene at uv, bloom added.
+fn graded(uv: vec2<f32>, b: vec3<f32>) -> vec3<f32> {
+    let hdr = textureSampleLevel(src, samp, uv, 0.0).rgb;
+    return punchy(agx(mix(hdr, b, post.bloom_strength) * post.exposure));
+}
+
+// Interleaved gradient noise (Jimenez 2014), animated per frame: dithering before the 8-bit
+// target turns gradient banding in the sky and sea into invisible grain.
+fn dither(px: vec2<f32>) -> f32 {
+    let p = px + 5.588238 * post.frame;
+    return fract(52.9829189 * fract(0.06711056 * p.x + 0.00583715 * p.y)) - 0.5;
+}
+
 @fragment
 fn fs_final(in: VsOut) -> @location(0) vec4<f32> {
-    let hdr = textureSampleLevel(src, samp, in.uv, 0.0).rgb;
     let b = textureSampleLevel(bloom, samp, in.uv, 0.0).rgb;
-    let col = mix(hdr, b, post.bloom_strength) * post.exposure;
+    let c = graded(in.uv, b);
+    var col = c;
+    if (post.sharpness > 0.0) {
+        // Contrast-adaptive sharpening (after AMD FidelityFX CAS): sharpen by a negative-lobe
+        // cross filter whose strength backs off where local contrast is already high, so TAA's
+        // softness goes without halos.
+        let t = 1.0 / vec2<f32>(textureDimensions(src));
+        let n = graded(in.uv + vec2<f32>(0.0, -t.y), b);
+        let s = graded(in.uv + vec2<f32>(0.0, t.y), b);
+        let e = graded(in.uv + vec2<f32>(t.x, 0.0), b);
+        let w = graded(in.uv + vec2<f32>(-t.x, 0.0), b);
+        let mn = min(c, min(min(n, s), min(e, w)));
+        let mx = max(c, max(max(n, s), max(e, w)));
+        let amp = sqrt(clamp(min(mn, vec3<f32>(1.0) - mx) / max(mx, vec3<f32>(1e-4)), vec3<f32>(0.0), vec3<f32>(1.0)));
+        let lobe = -amp / mix(8.0, 5.0, post.sharpness);
+        col = clamp(((n + s + e + w) * lobe + c) / (1.0 + 4.0 * lobe), vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    col += dither(in.pos.xy) / 255.0;
     // AgX's polynomial yields display-encoded values; agx_eotf linearises them for the sRGB target.
-    return vec4<f32>(agx_eotf(punchy(agx(col))), 1.0);
+    return vec4<f32>(agx_eotf(col), 1.0);
 }

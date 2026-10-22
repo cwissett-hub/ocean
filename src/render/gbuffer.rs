@@ -54,7 +54,14 @@ fn texture(
 
 impl GBuffer {
     pub fn new(d: &wgpu::Device, extent: (u32, u32)) -> GBuffer {
-        let hdr_tex = texture(d, "hdr", extent, HDR_FORMAT, wgpu::TextureUsages::COPY_SRC);
+        // COPY_DST: the TAA resolve is copied back in before post.
+        let hdr_tex = texture(
+            d,
+            "hdr",
+            extent,
+            HDR_FORMAT,
+            wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+        );
         let prev_hdr_tex = texture(d, "prev hdr", extent, HDR_FORMAT, wgpu::TextureUsages::COPY_DST);
         GBuffer {
             extent,

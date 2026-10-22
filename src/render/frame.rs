@@ -19,6 +19,7 @@ use crate::render::rt_scene::{MAX_INSTANCES as RT_MAX_INSTANCES, RtPatchConfig, 
 use crate::render::seabed::SeabedMap;
 use crate::render::shade::ShadePass;
 use crate::render::sky::{SkyLuts, sun_direction};
+use crate::render::taa::{self, TaaPass};
 use crate::scene::buoy::{BuoyBody, build_buoy_mesh};
 use crate::scene::camera::Camera;
 use crate::scene::cameras::{CameraController, CameraMode, FreeFlyInput};
@@ -65,6 +66,8 @@ struct FrameUniforms {
     resolution: [f32; 4],
     /// SeabedMap::params.
     seabed: [f32; 4],
+    /// TAA jitter of this frame's projection, pixels.
+    jitter: [f32; 4],
 }
 
 /// The parameters that change the wave spectrum (rebuilding it costs a few milliseconds).
@@ -138,6 +141,10 @@ pub struct Renderer {
     buoy_body: BuoyBody,
     raft: RaftBody,
     seabed: SeabedMap,
+    taa: TaaPass,
+    /// Frames rendered (drives the TAA jitter sequence).
+    frame_index: u32,
+    taa_was_on: bool,
     /// This frame's ray-tracing instances (mesh, transform, material id).
     rt_instances: Vec<(MeshHandle, Mat4, u32)>,
     /// The set of object meshes changed since the RT scene last saw it.
@@ -336,6 +343,7 @@ impl Renderer {
         let gbuffer = GBuffer::new(d, internal_extent(surface_extent, params.render_scale));
         let reflections = ReflectionPass::new(d, lib, &ctx.queue, &uniforms, &gbuffer);
         let particles = ParticleSystem::new(d, &ctx.queue, lib, &uniforms, &ocean, &sky, &gbuffer, &seabed);
+        let taa = TaaPass::new(d, lib, &uniforms, &gbuffer);
         let shade = ShadePass::new(d, lib, &uniforms, &sky, &gbuffer, reflections.views(), seabed.view());
         let post = Post::new(d, lib, format, &gbuffer);
         let mut objects = ObjectPass::new(d, &ctx.queue, lib, &layout);
@@ -365,6 +373,9 @@ impl Renderer {
             buoy_body: BuoyBody::at(BUOY_HOME),
             raft,
             seabed,
+            taa,
+            frame_index: 0,
+            taa_was_on: false,
             rt_instances: Vec::new(),
             rt_meshes_dirty: true,
             query,
@@ -522,6 +533,7 @@ impl Renderer {
         self.particles.shift(s);
         self.objects.rebase(s);
         self.reflections.invalidate_history();
+        self.taa.invalidate();
         self.prev_view_proj = None;
     }
 
@@ -570,6 +582,7 @@ impl Renderer {
                 .rebind(&self.device, &self.uniforms, &self.gbuffer, self.reflections.views());
             self.post.resize(&self.device, &self.gbuffer);
             self.particles.resize(&self.device, &self.uniforms, &self.gbuffer);
+            self.taa.resize(&self.device, &self.uniforms, &self.gbuffer);
             self.prev_view_proj = None;
         }
     }
@@ -614,9 +627,22 @@ impl Renderer {
         self.ensure_spectrum(&params, dt);
         let cam = self.update_world(&params, input, t, dt);
         let (w, h) = self.gbuffer.extent;
-        let vp = cam.view_proj(w as f32 / h as f32);
-        let prev = self.prev_view_proj.unwrap_or(vp);
-        self.prev_view_proj = Some(vp);
+        // TAA: rasterise with a sub-pixel jitter; motion vectors and the previous matrix stay
+        // unjittered.
+        let unjittered = cam.view_proj(w as f32 / h as f32);
+        let j = if params.taa {
+            taa::jitter(self.frame_index)
+        } else {
+            Vec2::ZERO
+        };
+        self.frame_index = self.frame_index.wrapping_add(1);
+        if params.taa && !self.taa_was_on {
+            self.taa.invalidate();
+        }
+        self.taa_was_on = params.taa;
+        let vp = taa::jittered(unjittered, j, (w, h));
+        let prev = self.prev_view_proj.unwrap_or(unjittered);
+        self.prev_view_proj = Some(unjittered);
         let sun = sun_direction(params.sun_elevation_deg, params.sun_azimuth_deg);
         let exposure = exposure_multiplier(exposure_ev(params.sun_elevation_deg));
         let u = FrameUniforms {
@@ -637,6 +663,7 @@ impl Renderer {
             ],
             resolution: [w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32],
             seabed: self.seabed.params(&self.origin),
+            jitter: [j.x, j.y, 0.0, 0.0],
         };
         self.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
 
@@ -726,9 +753,14 @@ impl Renderer {
         self.shade
             .record(&mut enc, &self.gbuffer, &self.sky, self.reflections.index());
         self.particles.draw(&mut enc, &self.gbuffer.hdr, &self.sky);
+        if params.taa {
+            self.taa.record(&mut enc, &self.queue, &self.gbuffer);
+        }
         self.gbuffer.record_history(&mut enc);
         self.timer.mark(&mut enc, "shade");
-        self.post.record(&mut enc, &self.queue, view, exposure);
+        let sharpness = if params.taa { params.sharpness } else { 0.0 };
+        self.post
+            .record(&mut enc, &self.queue, view, exposure, sharpness, self.frame_index);
         self.timer.mark(&mut enc, "post");
         overlay(&mut enc, view);
         self.timer.mark(&mut enc, "ui");

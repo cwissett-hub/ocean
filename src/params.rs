@@ -23,6 +23,10 @@ pub struct OceanParams {
     /// Per-pass GPU timing table under the fps readout (for tuning).
     pub show_timings: bool,
     pub vsync: bool,
+    /// Temporal anti-aliasing.
+    pub taa: bool,
+    /// Contrast-adaptive sharpening after TAA, 0 (off) ..1.
+    pub sharpness: f32,
 }
 
 impl Default for OceanParams {
@@ -42,6 +46,8 @@ impl Default for OceanParams {
             show_overlay: true,
             show_timings: false,
             vsync: true,
+            taa: true,
+            sharpness: 0.5,
         }
     }
 }
@@ -56,6 +62,7 @@ pub const SUN_ELEVATION_DEG: (f32, f32) = (-6.0, 90.0);
 pub const SUN_AZIMUTH_DEG: (f32, f32) = (0.0, 360.0);
 pub const PARTICLE_AMOUNT: (f32, f32) = (0.0, 2.0);
 pub const RENDER_SCALE: (f32, f32) = (0.5, 1.5);
+pub const SHARPNESS: (f32, f32) = (0.0, 1.0);
 
 fn clamp(v: f32, range: (f32, f32), default: f32) -> f32 {
     if v.is_finite() {
@@ -80,6 +87,7 @@ impl OceanParams {
             sun_azimuth_deg: clamp(self.sun_azimuth_deg, SUN_AZIMUTH_DEG, d.sun_azimuth_deg),
             particle_amount: clamp(self.particle_amount, PARTICLE_AMOUNT, d.particle_amount),
             render_scale: clamp(self.render_scale, RENDER_SCALE, d.render_scale),
+            sharpness: clamp(self.sharpness, SHARPNESS, d.sharpness),
             ..self
         }
     }
@@ -191,6 +199,8 @@ pub fn apply_overrides<S: AsRef<str>>(mut p: OceanParams, overrides: &[S]) -> Re
             "show_overlay" => p.show_overlay = flag()?,
             "show_timings" => p.show_timings = flag()?,
             "vsync" => p.vsync = flag()?,
+            "taa" => p.taa = flag()?,
+            "sharpness" => p.sharpness = num()?,
             "reflection_mode" => {
                 p.reflection_mode = match value.to_ascii_lowercase().as_str() {
                     "rt" => ReflectionMode::Rt,

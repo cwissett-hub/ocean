@@ -25,6 +25,7 @@ pub const SHADERS: &[&str] = &[
     "reflect_rt",
     "particles_sim",
     "particles_draw",
+    "taa",
 ];
 
 const EMBEDDED: &[(&str, &str)] = &[
@@ -46,6 +47,7 @@ const EMBEDDED: &[(&str, &str)] = &[
     ("reflect_rt", include_str!("../../shaders/reflect_rt.wgsl")),
     ("particles_sim", include_str!("../../shaders/particles_sim.wgsl")),
     ("particles_draw", include_str!("../../shaders/particles_draw.wgsl")),
+    ("taa", include_str!("../../shaders/taa.wgsl")),
     ("materials", include_str!("../../shaders/materials.wgsl")),
     ("frame_common", include_str!("../../shaders/frame_common.wgsl")),
     ("seabed_common", include_str!("../../shaders/seabed_common.wgsl")),

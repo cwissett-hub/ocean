@@ -25,7 +25,8 @@ const BLOOM_STRENGTH: f32 = 0.04;
 struct PostParams {
     exposure: f32,
     bloom_strength: f32,
-    _pad: [f32; 2],
+    sharpness: f32,
+    frame: f32,
 }
 
 pub struct Post {
@@ -168,12 +169,16 @@ impl Post {
         queue: &wgpu::Queue,
         output: &wgpu::TextureView,
         exposure: f32,
+        sharpness: f32,
+        frame: u32,
     ) {
         let c = &self.chain;
         let p = PostParams {
             exposure,
             bloom_strength: BLOOM_STRENGTH / c.mips.len() as f32,
-            _pad: [0.0; 2],
+            sharpness,
+            // Kept small so the f32 noise phase stays exact.
+            frame: (frame % 64) as f32,
         };
         queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&p));
         let pass = |enc: &mut wgpu::CommandEncoder,

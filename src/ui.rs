@@ -93,6 +93,10 @@ pub fn settings_panel(ctx: &egui::Context, p: &mut OceanParams, rt_available: bo
             });
             slider(ui, "render scale", &mut p.render_scale, params::RENDER_SCALE, "×");
             ui.checkbox(&mut p.vsync, "vsync");
+            ui.checkbox(&mut p.taa, "temporal anti-aliasing");
+            ui.add_enabled_ui(p.taa, |ui| {
+                slider(ui, "sharpness", &mut p.sharpness, params::SHARPNESS, "")
+            });
             ui.checkbox(&mut p.show_overlay, "fps readout (F2)");
             ui.checkbox(&mut p.show_timings, "detailed GPU timings");
             ui.separator();

@@ -56,7 +56,8 @@ fn fs_gbuffer(in: VsOut, @builtin(front_facing) front: bool) -> GBufferOut {
     var o: GBufferOut;
     o.normal_var = vec4<f32>(n, material_variance(in.material));
     o.material = vec4<f32>(0.0, f32(in.material) / 8.0, in.param, 0.0);
-    o.motion = prev_px - in.clip.xy;
+    // Motion of the unjittered image (TAA jitters the projection, not the scene).
+    o.motion = prev_px - (in.clip.xy - frame.jitter.xy);
     return o;
 }
 

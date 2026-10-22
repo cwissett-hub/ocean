@@ -9,8 +9,8 @@ use crate::gpu::extent::render_extent;
 use crate::gpu::shaders::ShaderLibrary;
 use crate::gpu::timing::{GpuTimer, PassStats};
 use crate::params::OceanParams;
-use crate::render::buoy_pass::BuoyPass;
 use crate::render::gbuffer::{DEPTH_FORMAT, GBuffer, MATERIAL_FORMAT, MOTION_FORMAT, NORMAL_FORMAT};
+use crate::render::object_pass::{MeshHandle, ObjectPass};
 use crate::render::ocean_mesh::{BASE_CELL_M, GRID, LEVELS, OceanMesh};
 use crate::render::particles::{ParticleInputs, ParticleSystem};
 use crate::render::post::{Post, exposure_ev, exposure_multiplier};
@@ -19,7 +19,10 @@ use crate::render::rt_scene::{RtPatchConfig, RtScene, patch_origin};
 use crate::render::shade::ShadePass;
 use crate::render::sky::{SkyLuts, sun_direction};
 use crate::scene::buoy::{BuoyBody, build_buoy_mesh};
-use crate::scene::camera::{Camera, CameraRig, FixedCamera};
+use crate::scene::camera::Camera;
+use crate::scene::cameras::{CameraController, CameraMode, FreeFlyInput};
+use crate::scene::raft::{RaftBody, RaftControls};
+use crate::scene::raft_mesh::build_raft_mesh;
 use crate::waves::foam::foam_params;
 use crate::waves::gpu_ocean::GpuOcean;
 use crate::waves::query::{WaterSample, WaveQuery};
@@ -97,7 +100,7 @@ pub struct Renderer {
     shade: ShadePass,
     post: Post,
     surface_extent: (u32, u32),
-    camera: FixedCamera,
+    cameras: CameraController,
     prev_view_proj: Option<Mat4>,
     spectrum_key: SpectrumKey,
     stats: SpectrumStats,
@@ -106,19 +109,38 @@ pub struct Renderer {
     /// Ray-tracing scene; None when the device has no ray query.
     rt: Option<RtScene>,
     particles: ParticleSystem,
-    buoy: BuoyPass,
+    objects: ObjectPass,
+    buoy_mesh: MeshHandle,
+    raft_mesh: MeshHandle,
     buoy_body: BuoyBody,
+    raft: RaftBody,
     query: WaveQuery,
-    /// Latest water samples under the buoy, and the heights/time they came from (for velocity).
-    water: Option<[WaterSample; 5]>,
-    last_heights: Option<([f32; 5], f32)>,
+    /// Latest water samples (raft 9, buoy 5, camera 1) and the heights/time they came from.
+    water: Option<[WaterSample; QUERY_POINTS]>,
+    last_heights: Option<([f32; QUERY_POINTS], f32)>,
 }
 
-/// The buoy rides ~35 m ahead of the camera, a little to the right of the sun's glitter path.
-fn buoy_anchor(cam: &Camera) -> Vec2 {
-    let fwd = Vec2::new(cam.forward.x, cam.forward.z).normalize_or_zero();
-    let right = Vec2::new(fwd.y, -fwd.x);
-    Vec2::new(cam.position.x, cam.position.z) + fwd * 35.0 + right * 4.0
+/// Per-frame player input.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FrameInput {
+    pub controls: RaftControls,
+    pub free: FreeFlyInput,
+    pub cycle_camera: bool,
+}
+
+/// Water query layout: raft samples, then buoy samples, then the camera.
+const RAFT_Q: usize = 0;
+const BUOY_Q: usize = 9;
+const CAMERA_Q: usize = 14;
+const QUERY_POINTS: usize = 15;
+/// The buoy is moored here, near the start (world = local until the first rebase).
+const BUOY_HOME: Vec3 = Vec3::new(-25.0, 0.0, 40.0);
+
+/// The raft starts 20 m behind the origin, facing the start island under the sun.
+fn raft_start() -> RaftBody {
+    let heading = 30f32.to_radians();
+    let fwd = Vec3::new(heading.sin(), 0.0, heading.cos());
+    RaftBody::at(-fwd * 20.0, heading)
 }
 
 fn internal_extent(surface: (u32, u32), scale: f32) -> (u32, u32) {
@@ -273,32 +295,27 @@ impl Renderer {
         let particles = ParticleSystem::new(d, &ctx.queue, lib, &uniforms, &ocean, &sky, &gbuffer);
         let shade = ShadePass::new(d, lib, &uniforms, &sky, &gbuffer, reflections.views());
         let post = Post::new(d, lib, format, &gbuffer);
-        let buoy_mesh = build_buoy_mesh();
-        let buoy = BuoyPass::new(d, &ctx.queue, lib, &layout, &buoy_mesh);
+        let mut objects = ObjectPass::new(d, &ctx.queue, lib, &layout);
+        let buoy_mesh = objects.add_mesh(d, &build_buoy_mesh());
+        let raft_mesh = objects.add_mesh(d, &build_raft_mesh());
         let query = WaveQuery::new(ctx, lib, &ocean);
-        let camera = FixedCamera {
-            yaw_deg: params.sun_azimuth_deg,
-            ..Default::default()
-        };
-        let anchor = buoy_anchor(&camera.pose());
+        let raft = raft_start();
+        let cameras = CameraController::new(&raft);
         let mut reflections = reflections;
         let rt = ctx.rt_available.then(|| {
-            let scene = RtScene::new(
-                ctx,
-                lib,
-                &ocean,
-                buoy.geometry(),
-                buoy_mesh.vertices.len() as u32,
-                RtPatchConfig::default(),
-            );
+            let (vb, ib, indices, vertices) = objects.mesh_geometry(buoy_mesh).expect("buoy mesh");
+            let scene = RtScene::new(ctx, lib, &ocean, (vb, ib, indices), vertices, RtPatchConfig::default());
             reflections.enable_rt(d, lib, &sky, &uniforms, &gbuffer, &scene);
             scene
         });
         Renderer {
             rt,
             particles,
-            buoy,
-            buoy_body: BuoyBody::at(Vec3::new(anchor.x, 0.0, anchor.y)),
+            objects,
+            buoy_mesh,
+            raft_mesh,
+            buoy_body: BuoyBody::at(BUOY_HOME),
+            raft,
             query,
             water: None,
             last_heights: None,
@@ -315,7 +332,7 @@ impl Renderer {
             shade,
             post,
             surface_extent,
-            camera,
+            cameras,
             prev_view_proj: None,
             spectrum_key: SpectrumKey::of(params),
             stats: SpectrumStats::of(&spectrum, params),
@@ -328,13 +345,22 @@ impl Renderer {
         self.surface_extent = surface_extent;
     }
 
-    /// Feeds the newest water samples to the buoy, steps it and queues the next query.
-    fn update_buoy(&mut self, cam: &Camera, t: f32, dt: f32) {
-        let anchor = buoy_anchor(cam);
-        self.buoy_body.position.x = anchor.x;
-        self.buoy_body.position.z = anchor.y;
-        if let Some(results) = self.query.poll(&self.device).filter(|r| r.len() == 5) {
-            let heights: [f32; 5] = std::array::from_fn(|i| results[i].0);
+    pub fn raft(&self) -> &RaftBody {
+        &self.raft
+    }
+
+    pub fn camera_mode(&self) -> CameraMode {
+        self.cameras.mode
+    }
+
+    /// Steps the raft and buoy on the newest water samples, moves the camera, and queues the
+    /// next water query (raft, buoy, camera points).
+    fn update_world(&mut self, params: &OceanParams, input: &FrameInput, t: f32, dt: f32) -> Camera {
+        if input.cycle_camera {
+            self.cameras.mode = self.cameras.mode.next();
+        }
+        if let Some(results) = self.query.poll(&self.device).filter(|r| r.len() == QUERY_POINTS) {
+            let heights: [f32; QUERY_POINTS] = std::array::from_fn(|i| results[i].0);
             let samples = std::array::from_fn(|i| {
                 let vy = match self.last_heights {
                     Some((prev, pt)) if t > pt => (heights[i] - prev[i]) / (t - pt),
@@ -349,11 +375,42 @@ impl Renderer {
             self.last_heights = Some((heights, t));
             self.water = Some(samples);
         }
+        let a = params.wind_dir_deg.to_radians();
+        let wind = Vec2::new(a.sin(), a.cos()) * params.wind_speed;
+        // Free fly leaves the raft drifting with whatever sail it had.
+        let controls = if self.cameras.mode == CameraMode::FreeFly {
+            RaftControls {
+                steer: 0.0,
+                paddle: 0.0,
+                sail_up: input.controls.sail_up,
+            }
+        } else {
+            input.controls
+        };
+        let terrain = |_: Vec2| -crate::world::islands::SEA_DEPTH_M;
+        let mut camera_water = 0.0;
         if let Some(s) = &self.water {
-            self.buoy_body.step(s, dt.min(0.25));
+            let raft_w: [WaterSample; 9] = std::array::from_fn(|i| s[RAFT_Q + i]);
+            let buoy_w: [WaterSample; 5] = std::array::from_fn(|i| s[BUOY_Q + i]);
+            self.raft.step(&raft_w, wind, &controls, &terrain, dt.min(0.25));
+            self.buoy_body.step(&buoy_w, dt.min(0.25));
+            camera_water = s[CAMERA_Q].height;
         }
-        self.buoy.set_transform(self.buoy_body.transform());
-        self.query.request(&self.buoy_body.sample_points());
+        // The camera's water sample is from where it was last frame; add a margin for waves.
+        let ground = |p: Vec2| (camera_water + 0.3 * self.stats.hs).max(terrain(p));
+        let cam = self
+            .cameras
+            .update(dt, &self.raft, params.sun_azimuth_deg, &input.free, &ground);
+        self.objects.set_instances(&[
+            (1, self.buoy_mesh, self.buoy_body.transform()),
+            (2, self.raft_mesh, self.raft.transform()),
+        ]);
+        let mut points = [Vec2::ZERO; QUERY_POINTS];
+        points[RAFT_Q..RAFT_Q + 9].copy_from_slice(&self.raft.sample_points());
+        points[BUOY_Q..BUOY_Q + 5].copy_from_slice(&self.buoy_body.sample_points());
+        points[CAMERA_Q] = Vec2::new(cam.position.x, cam.position.z);
+        self.query.request(&points);
+        cam
     }
 
     fn ensure_targets(&mut self, scale: f32) {
@@ -401,15 +458,14 @@ impl Renderer {
         params: &OceanParams,
         t: f32,
         dt: f32,
+        input: &FrameInput,
         overlay: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView),
     ) {
         self.timer.poll(&self.device);
         let params = params.clamped();
         self.ensure_targets(params.render_scale);
         self.ensure_spectrum(&params, dt);
-        self.camera.yaw_deg = params.sun_azimuth_deg;
-        let cam = self.camera.pose();
-        self.update_buoy(&cam, t, dt);
+        let cam = self.update_world(&params, input, t, dt);
         let (w, h) = self.gbuffer.extent;
         let vp = cam.view_proj(w as f32 / h as f32);
         let prev = self.prev_view_proj.unwrap_or(vp);
@@ -449,8 +505,9 @@ impl Renderer {
         self.timer.mark(&mut enc, "ocean sim");
         if let Some(rt) = &mut self.rt {
             let origin = patch_origin(cam.position, cam.forward, &rt.config());
-            let (vb, ib, _) = self.buoy.geometry();
-            rt.record(&mut enc, origin, self.buoy_body.transform(), (vb, ib));
+            if let Some((vb, ib, _, _)) = self.objects.mesh_geometry(self.buoy_mesh) {
+                rt.record(&mut enc, origin, self.buoy_body.transform(), (vb, ib));
+            }
         }
         self.timer.mark(&mut enc, "rt build");
         self.particles.record(
@@ -468,7 +525,7 @@ impl Renderer {
         self.timer.mark(&mut enc, "particle sim");
         self.sky.update(&mut enc, sun);
         self.timer.mark(&mut enc, "sky");
-        self.buoy.record_opaque(
+        self.objects.record_opaque(
             &mut enc,
             &self.gbuffer,
             &self.ocean_bind_groups[self.ocean.foam_index()],
@@ -503,7 +560,7 @@ impl Renderer {
             pass.set_bind_group(0, &self.ocean_bind_groups[self.ocean.foam_index()], &[]);
             pass.set_index_buffer(self.mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.mesh.index_count, 0, 0..LEVELS);
-            self.buoy
+            self.objects
                 .draw_gbuffer(&mut pass, &self.ocean_bind_groups[self.ocean.foam_index()]);
         }
         self.timer.mark(&mut enc, "gbuffer");

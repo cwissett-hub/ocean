@@ -1,5 +1,5 @@
 // Surface shading shared by the main composite and ray-traced reflection hits.
-// Needs frame_common, sky_common, sky_sample, buoy_common.
+// Needs frame_common, sky_common, sky_sample, materials.
 
 const WATER_F0: f32 = 0.02;
 // Seawater absorption and scattering, 1/m (pure-water absorption + a little particulate).
@@ -44,19 +44,21 @@ fn underwater_irradiance() -> vec3<f32> {
     return sun_transmittance() * max(sun.y, 0.0) * (1.0 - fresnel(max(sun.y, 0.0))) + sky_irradiance() * 0.94;
 }
 
-// Painted steel: diffuse sun and sky, a soft GGX highlight and the sky in its sheen.
-fn shade_buoy(p: vec3<f32>, n: vec3<f32>, local_y: f32) -> vec3<f32> {
+// Opaque objects (buoy, raft, sand, palms): diffuse sun and sky, a GGX highlight, the sky in
+// their sheen, sunlight glowing through the sail when it is between the eye and a low sun, and
+// the buoy's lantern at dusk.
+fn shade_object(p: vec3<f32>, n: vec3<f32>, id: u32, param: f32) -> vec3<f32> {
     let to_eye = frame.cam_pos.xyz - p;
     let dist = length(to_eye);
     let v = to_eye / dist;
     let sun = frame.sun_dir.xyz;
     let e_sun = sun_transmittance();
-    let albedo = buoy_albedo(local_y);
+    let albedo = material_albedo(id, param);
     let n_l = max(dot(n, sun), 0.0);
     let n_v = max(dot(n, v), 1e-4);
     let ambient = sky_irradiance() * (0.6 + 0.4 * n.y) + sky_radiance(normalize(vec3<f32>(-sun.x, 0.1, -sun.z))) * PI * 0.15 * max(-n.y, 0.0);
     var col = albedo / PI * (e_sun * n_l + ambient);
-    let alpha2 = 2.0 * BUOY_PAINT_VARIANCE;
+    let alpha2 = clamp(2.0 * material_variance(id), 1e-3, 1.0);
     let h = normalize(v + sun);
     if (n_l > 0.0) {
         let g = smith_g1(n_v, alpha2) * smith_g1(n_l, alpha2);
@@ -64,8 +66,12 @@ fn shade_buoy(p: vec3<f32>, n: vec3<f32>, local_y: f32) -> vec3<f32> {
         col += e_sun * ggx(max(dot(n, h), 0.0), alpha2) * g * f0 / (4.0 * n_v);
     }
     let f = 0.04 + 0.96 * pow(1.0 - n_v, 5.0);
-    col += sky_radiance(reflect(-v, n)) * f * 0.5;
-    // The lantern, bright enough to bloom at dusk.
-    col += buoy_emission(local_y) * 0.4 * (1.0 - smoothstep(-6.0, 20.0, degrees(asin(sun.y))));
+    col += sky_radiance(reflect(-v, n)) * f * select(0.5, 0.15, alpha2 > 0.3);
+    if (id == MAT_SAIL || id == MAT_PALM_FROND) {
+        // Thin cloth / leaves: light through them toward the eye.
+        let through = pow(max(dot(-v, sun), 0.0), 4.0);
+        col += albedo * e_sun * through * select(0.25, 0.6, id == MAT_SAIL);
+    }
+    col += material_emission(id, param) * 0.4 * (1.0 - smoothstep(-6.0, 20.0, degrees(asin(sun.y))));
     return aerial(col, -v, dist);
 }

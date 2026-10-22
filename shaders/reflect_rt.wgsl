@@ -1,7 +1,7 @@
 // #include frame_common.wgsl
 // #include sky_common.wgsl
 // #include sky_sample.wgsl
-// #include buoy_common.wgsl
+// #include materials.wgsl
 // #include surfaces.wgsl
 enable wgpu_ray_query;
 
@@ -127,7 +127,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
                 ln = vec3<f32>(0.0, 1.0, 0.0);
             }
             let wn = normalize((hit.object_to_world * vec4<f32>(ln, 0.0)).xyz);
-            col = shade_buoy(h, wn, local.y);
+            col = shade_object(h, wn, MAT_BUOY, (local.y + 0.5) / 4.0);
         } else {
             // Facet normal says which side was hit; the smooth normal shades it.
             let facet = patch_normal(hit.primitive_index);

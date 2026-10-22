@@ -8,12 +8,13 @@ use ocean::clock::sim_time;
 use ocean::gpu::adapter::GpuContext;
 use ocean::gpu::extent::render_extent;
 use ocean::gpu::shaders::ShaderLibrary;
+use ocean::input::KeyState;
 use ocean::params::{OceanParams, apply_overrides};
-use ocean::render::frame::Renderer;
+use ocean::render::frame::{FrameInput, Renderer};
 use ocean::ui::{self, OverlayInfo};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
@@ -58,6 +59,9 @@ struct App {
     fps: f32,
     /// Fixed simulation time (for A/B screenshots).
     freeze_time: Option<f32>,
+    keys: KeyState,
+    sail_up: bool,
+    cycle_camera: bool,
 }
 
 impl App {
@@ -74,6 +78,9 @@ impl App {
             fps_since: now,
             fps: 0.0,
             freeze_time: None,
+            keys: KeyState::default(),
+            sail_up: true,
+            cycle_camera: false,
         }
     }
 }
@@ -182,7 +189,7 @@ impl Gfx {
         }
     }
 
-    fn render(&mut self, params: &mut OceanParams, show_panel: bool, fps: f32, t: f32, dt: f32) {
+    fn render(&mut self, params: &mut OceanParams, show_panel: bool, fps: f32, t: f32, dt: f32, input: &FrameInput) {
         let size = self.window.inner_size();
         let Some(internal) = render_extent(size.width, size.height, params.render_scale) else {
             return;
@@ -237,7 +244,7 @@ impl Gfx {
             pixels_per_point: out.pixels_per_point,
         };
         let (device, queue, egui_renderer) = (&self.ctx.device, &self.ctx.queue, &mut self.egui_renderer);
-        self.renderer.render(&view, params, t, dt, |enc, target| {
+        self.renderer.render(&view, params, t, dt, input, |enc, target| {
             egui_renderer.update_buffers(device, queue, enc, &prims, &screen);
             let pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("egui"),
@@ -263,6 +270,12 @@ impl Gfx {
 }
 
 impl ApplicationHandler for App {
+    fn device_event(&mut self, _el: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
+        if let DeviceEvent::MouseMotion { delta } = event {
+            self.keys.mouse_moved(glam::Vec2::new(delta.0 as f32, delta.1 as f32));
+        }
+    }
+
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.gfx.is_some() {
             return;
@@ -291,10 +304,29 @@ impl ApplicationHandler for App {
                 gfx.window.request_redraw();
             }
             WindowEvent::Occluded(false) => gfx.window.request_redraw(),
-            WindowEvent::KeyboardInput { event: k, .. }
-                if !consumed && k.state == ElementState::Pressed && !k.repeat =>
-            {
+            WindowEvent::KeyboardInput { event: k, .. } if k.state == ElementState::Released => {
+                if let PhysicalKey::Code(code) = k.physical_key {
+                    self.keys.release(code);
+                }
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Right,
+                ..
+            } => {
+                self.keys.right_mouse = state == ElementState::Pressed && !consumed;
+            }
+            WindowEvent::Focused(false) => self.keys = KeyState::default(),
+            WindowEvent::KeyboardInput { event: k, .. } if !consumed && k.state == ElementState::Pressed => {
+                if let PhysicalKey::Code(code) = k.physical_key {
+                    self.keys.press(code);
+                }
+                if k.repeat {
+                    return;
+                }
                 match k.physical_key {
+                    PhysicalKey::Code(KeyCode::Space) => self.sail_up = !self.sail_up,
+                    PhysicalKey::Code(KeyCode::KeyC) => self.cycle_camera = true,
                     PhysicalKey::Code(KeyCode::F1) => self.show_panel = !self.show_panel,
                     PhysicalKey::Code(KeyCode::F2) => self.params.show_overlay = !self.params.show_overlay,
                     PhysicalKey::Code(KeyCode::F5) => gfx.reload_shaders(&self.params),
@@ -313,7 +345,12 @@ impl ApplicationHandler for App {
                 self.last_frame = now;
                 // f64 until reduced to one wave period: f32 seconds judder after hours.
                 let t = sim_time(self.freeze_time.map_or((now - self.start).as_secs_f64(), f64::from));
-                gfx.render(&mut self.params, self.show_panel, self.fps, t, dt);
+                let input = FrameInput {
+                    controls: self.keys.raft_controls(self.sail_up),
+                    free: self.keys.free_fly(),
+                    cycle_camera: std::mem::take(&mut self.cycle_camera),
+                };
+                gfx.render(&mut self.params, self.show_panel, self.fps, t, dt, &input);
                 self.frames += 1;
                 let secs = self.fps_since.elapsed().as_secs_f32();
                 if secs >= 0.5 {

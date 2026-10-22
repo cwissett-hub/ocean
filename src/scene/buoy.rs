@@ -2,6 +2,7 @@
 
 use glam::{Mat4, Quat, Vec2, Vec3};
 
+use crate::scene::mesh::{MeshData, material};
 use crate::waves::query::WaterSample;
 
 /// Where the water is sampled, relative to the buoy's waterline centre (world-aligned).
@@ -19,67 +20,22 @@ const HEAVE_ZETA: f32 = 0.6;
 const ROLL_ZETA: f32 = 0.7;
 const MAX_SUBSTEP_S: f32 = 1.0 / 120.0;
 
-pub struct BuoyMesh {
-    /// Position (xyz) and normal (xyz), metres; y = 0 is the waterline.
-    pub vertices: Vec<[f32; 6]>,
-    pub indices: Vec<u32>,
-}
-
-impl BuoyMesh {
-    fn add_cylinder(&mut self, center: Vec2, radius: f32, y0: f32, y1: f32, segments: u32) {
-        let ring = |y: f32, i: u32| {
-            let a = std::f32::consts::TAU * i as f32 / segments as f32;
-            (
-                Vec3::new(center.x + radius * a.cos(), y, center.y + radius * a.sin()),
-                Vec3::new(a.cos(), 0.0, a.sin()),
-            )
-        };
-        // Side.
-        let base = self.vertices.len() as u32;
-        for i in 0..segments {
-            for y in [y0, y1] {
-                let (p, n) = ring(y, i);
-                self.vertices.push([p.x, p.y, p.z, n.x, n.y, n.z]);
-            }
-        }
-        for i in 0..segments {
-            let (a, b) = (base + 2 * i, base + 2 * ((i + 1) % segments));
-            self.indices.extend_from_slice(&[a, b, a + 1, a + 1, b, b + 1]);
-        }
-        // Caps, with their own vertices for sharp edges.
-        for (y, ny) in [(y0, -1.0f32), (y1, 1.0f32)] {
-            let c = self.vertices.len() as u32;
-            self.vertices.push([center.x, y, center.y, 0.0, ny, 0.0]);
-            for i in 0..segments {
-                let (p, _) = ring(y, i);
-                self.vertices.push([p.x, p.y, p.z, 0.0, ny, 0.0]);
-            }
-            for i in 0..segments {
-                let (a, b) = (c + 1 + i, c + 1 + (i + 1) % segments);
-                if ny > 0.0 {
-                    self.indices.extend_from_slice(&[c, b, a]);
-                } else {
-                    self.indices.extend_from_slice(&[c, a, b]);
-                }
-            }
-        }
-    }
-}
-
 /// Float drum (Ø1.8 m, half submerged), deck, four cage posts, top ring and lantern: 4 m tall.
-pub fn build_buoy_mesh() -> BuoyMesh {
-    let mut m = BuoyMesh {
-        vertices: Vec::new(),
-        indices: Vec::new(),
-    };
-    m.add_cylinder(Vec2::ZERO, 0.9, -0.5, 0.4, 40);
-    m.add_cylinder(Vec2::ZERO, 0.95, 0.4, 0.47, 40);
+/// Material BUOY; param = height above the waterline, (y + 0.5) / 4, for the paint bands.
+pub fn build_buoy_mesh() -> MeshData {
+    let mut m = MeshData::default();
+    let b = material::BUOY;
+    m.add_cylinder(Vec2::ZERO, 0.9, -0.5, 0.4, 40, b, 0.0);
+    m.add_cylinder(Vec2::ZERO, 0.95, 0.4, 0.47, 40, b, 0.0);
     for k in 0..4 {
         let a = std::f32::consts::FRAC_PI_2 * k as f32 + std::f32::consts::FRAC_PI_4;
-        m.add_cylinder(Vec2::new(0.5 * a.cos(), 0.5 * a.sin()), 0.045, 0.47, 3.2, 10);
+        m.add_cylinder(Vec2::new(0.5 * a.cos(), 0.5 * a.sin()), 0.045, 0.47, 3.2, 10, b, 0.0);
     }
-    m.add_cylinder(Vec2::ZERO, 0.62, 3.2, 3.26, 32);
-    m.add_cylinder(Vec2::ZERO, 0.14, 3.26, 3.5, 16);
+    m.add_cylinder(Vec2::ZERO, 0.62, 3.2, 3.26, 32, b, 0.0);
+    m.add_cylinder(Vec2::ZERO, 0.14, 3.26, 3.5, 16, b, 0.0);
+    for v in &mut m.vertices {
+        v[7] = (v[1] + 0.5) / 4.0;
+    }
     m
 }
 
@@ -260,6 +216,7 @@ mod tests {
     #[test]
     fn buoy_mesh_is_closed_and_sane() {
         let m = build_buoy_mesh();
+        assert!(m.vertices.iter().all(|v| v[6] as u32 == material::BUOY));
         let n = m.vertices.len() as u32;
         assert!(m.indices.len().is_multiple_of(3) && !m.indices.is_empty());
         assert!(m.indices.iter().all(|&i| i < n));

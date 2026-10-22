@@ -300,7 +300,7 @@ impl RtScene {
             size: &self.buoy_size,
             vertex_buffer: buoy_geometry.0,
             first_vertex: 0,
-            vertex_stride: 24,
+            vertex_stride: 32,
             index_buffer: Some(buoy_geometry.1),
             first_index: Some(0),
             transform_buffer: None,

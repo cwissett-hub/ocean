@@ -1,7 +1,7 @@
 // #include frame_common.wgsl
 // #include sky_common.wgsl
 // #include sky_sample.wgsl
-// #include buoy_common.wgsl
+// #include materials.wgsl
 // #include surfaces.wgsl
 // Full-screen composite into the HDR target: sky where nothing was drawn, physically based
 // water elsewhere. Needs frame_common.wgsl, sky_common.wgsl, sky_sample.wgsl.
@@ -107,8 +107,9 @@ fn fs_shade(in: VsOut) -> @location(0) vec4<f32> {
     let foam = textureLoad(material_tex, px, 0).r;
     let traced = textureSampleLevel(reflection_tex, lin, in.pos.xy * frame.resolution.zw, 0.0);
     let mat = textureLoad(material_tex, px, 0);
-    if (mat.g > 0.5) {
-        return vec4<f32>(shade_buoy(p, nv.xyz, mat.b * 4.0 - 0.5), 1.0);
+    let id = decode_material(mat.g);
+    if (id != MAT_WATER) {
+        return vec4<f32>(shade_object(p, nv.xyz, id, mat.b), 1.0);
     }
     return vec4<f32>(shade_water(in.pos.xy, p, nv.xyz, nv.w, foam, traced), 1.0);
 }

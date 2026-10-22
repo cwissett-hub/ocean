@@ -1,6 +1,6 @@
-pub mod buoy_pass;
 pub mod frame;
 pub mod gbuffer;
+pub mod object_pass;
 pub mod ocean_mesh;
 pub mod particles;
 pub mod post;

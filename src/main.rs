@@ -239,6 +239,9 @@ impl Gfx {
             } else if !info.shader_errors.is_empty() {
                 ui::shader_errors(ctx, &info.shader_errors);
             }
+            if params.show_controls {
+                ui::controls_hint(ctx);
+            }
         });
         self.egui_state
             .handle_platform_output(&self.window, out.platform_output);
@@ -347,6 +350,7 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyC) => self.cycle_camera = true,
                     PhysicalKey::Code(KeyCode::F1) => self.show_panel = !self.show_panel,
                     PhysicalKey::Code(KeyCode::F2) => self.params.show_overlay = !self.params.show_overlay,
+                    PhysicalKey::Code(KeyCode::KeyH) => self.params.show_controls = !self.params.show_controls,
                     PhysicalKey::Code(KeyCode::F5) => gfx.reload_shaders(&self.params),
                     PhysicalKey::Code(KeyCode::Escape) => el.exit(),
                     _ => {}

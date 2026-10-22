@@ -9,7 +9,7 @@ use crate::scene::raft::RaftBody;
 /// Every control, for the settings panel and the README.
 pub const CONTROLS_HELP: &str = "Raft: A/D steer · W/S paddle · Space sail up/down · C camera
 Free fly: WASD move · Q/E down/up · right-drag look · Shift fast
-F1 settings · F2 fps · F5 reload shaders · Esc quit";
+F1 settings · F2 fps · H hide this · F5 reload shaders · Esc quit";
 
 /// What the panel shows about the raft.
 #[derive(Debug, Clone, PartialEq)]
@@ -104,6 +104,19 @@ pub fn settings_panel(ctx: &egui::Context, p: &mut OceanParams, rt_available: bo
                 *p = OceanParams::default();
             }
             ui.small(CONTROLS_HELP);
+        });
+}
+
+/// The controls, small and translucent in the bottom-left corner like the fps readout (H hides).
+pub fn controls_hint(ctx: &egui::Context) {
+    egui::Area::new(egui::Id::unique("controls hint"))
+        .anchor(egui::Align2::LEFT_BOTTOM, [8.0, -6.0])
+        .interactable(false)
+        .show(ctx, |ui| {
+            let text = egui::RichText::new(CONTROLS_HELP)
+                .small()
+                .color(egui::Color32::from_rgba_unmultiplied(235, 235, 235, 150));
+            ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
         });
 }
 

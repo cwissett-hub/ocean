@@ -60,6 +60,7 @@ otherwise uses the copies compiled in.
 | WASD, Q / E, right-drag, Shift | free fly: move, down / up, look, fast |
 | F1 | settings panel (raft status, wind, fetch, swell, foam, spray, sun, reflections, render scale, vsync) |
 | F2 | fps readout (detailed GPU timings via the settings panel) |
+| H | show / hide the controls hint |
 | F5 | reload shaders from disk (errors shown, last good shaders keep running) |
 | Esc | quit |
 

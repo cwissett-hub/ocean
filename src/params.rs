@@ -20,6 +20,8 @@ pub struct OceanParams {
     pub particle_amount: f32,
     pub render_scale: f32,
     pub show_overlay: bool,
+    /// The controls hint in the bottom-left corner (H).
+    pub show_controls: bool,
     /// Per-pass GPU timing table under the fps readout (for tuning).
     pub show_timings: bool,
     pub vsync: bool,
@@ -44,6 +46,7 @@ impl Default for OceanParams {
             particle_amount: 1.0,
             render_scale: 1.0,
             show_overlay: true,
+            show_controls: true,
             show_timings: false,
             vsync: true,
             taa: true,
@@ -197,6 +200,7 @@ pub fn apply_overrides<S: AsRef<str>>(mut p: OceanParams, overrides: &[S]) -> Re
             "particle_amount" => p.particle_amount = num()?,
             "render_scale" => p.render_scale = num()?,
             "show_overlay" => p.show_overlay = flag()?,
+            "show_controls" => p.show_controls = flag()?,
             "show_timings" => p.show_timings = flag()?,
             "vsync" => p.vsync = flag()?,
             "taa" => p.taa = flag()?,

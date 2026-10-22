@@ -20,6 +20,8 @@ pub struct OceanParams {
     pub particle_amount: f32,
     pub render_scale: f32,
     pub show_overlay: bool,
+    /// Per-pass GPU timing table under the fps readout (for tuning).
+    pub show_timings: bool,
     pub vsync: bool,
 }
 
@@ -38,6 +40,7 @@ impl Default for OceanParams {
             particle_amount: 1.0,
             render_scale: 1.0,
             show_overlay: true,
+            show_timings: false,
             vsync: true,
         }
     }
@@ -186,6 +189,7 @@ pub fn apply_overrides<S: AsRef<str>>(mut p: OceanParams, overrides: &[S]) -> Re
             "particle_amount" => p.particle_amount = num()?,
             "render_scale" => p.render_scale = num()?,
             "show_overlay" => p.show_overlay = flag()?,
+            "show_timings" => p.show_timings = flag()?,
             "vsync" => p.vsync = flag()?,
             "reflection_mode" => {
                 p.reflection_mode = match value.to_ascii_lowercase().as_str() {
@@ -198,4 +202,20 @@ pub fn apply_overrides<S: AsRef<str>>(mut p: OceanParams, overrides: &[S]) -> Re
         }
     }
     Ok(p.clamped())
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+
+    #[test]
+    fn detailed_timings_are_off_by_default_and_settable() {
+        assert!(!OceanParams::default().show_timings);
+        assert!(OceanParams::default().show_overlay, "the fps readout stays on");
+        assert!(
+            apply_overrides(OceanParams::default(), &["show_timings=true"])
+                .unwrap()
+                .show_timings
+        );
+    }
 }

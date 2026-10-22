@@ -53,7 +53,8 @@ pub fn settings_panel(ctx: &egui::Context, p: &mut OceanParams, rt_available: bo
             });
             slider(ui, "render scale", &mut p.render_scale, params::RENDER_SCALE, "×");
             ui.checkbox(&mut p.vsync, "vsync");
-            ui.checkbox(&mut p.show_overlay, "performance overlay (F2)");
+            ui.checkbox(&mut p.show_overlay, "fps readout (F2)");
+            ui.checkbox(&mut p.show_timings, "detailed GPU timings");
             ui.separator();
             if ui.button("reset to defaults").clicked() {
                 *p = OceanParams::default();
@@ -62,38 +63,48 @@ pub fn settings_panel(ctx: &egui::Context, p: &mut OceanParams, rt_available: bo
         });
 }
 
-pub fn overlay(ctx: &egui::Context, info: &OverlayInfo) {
+/// A small fps readout in the top-right corner; with `detailed`, the per-pass GPU timing table
+/// under it. Shader errors always show here when the overlay is on.
+pub fn overlay(ctx: &egui::Context, info: &OverlayInfo, detailed: bool) {
     egui::Area::new(egui::Id::unique("perf overlay"))
-        .anchor(egui::Align2::RIGHT_TOP, [-10.0, 10.0])
+        .anchor(egui::Align2::RIGHT_TOP, [-8.0, 6.0])
         .interactable(false)
         .show(ctx, |ui| {
+            let fps = egui::RichText::new(format!("{:.0} fps", info.fps))
+                .small()
+                .color(egui::Color32::from_rgba_unmultiplied(235, 235, 235, 170));
+            if !detailed && info.shader_errors.is_empty() {
+                ui.add(egui::Label::new(fps).wrap_mode(egui::TextWrapMode::Extend));
+                return;
+            }
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_min_width(250.0);
                 ui.set_max_width(320.0);
-                ui.label(egui::RichText::new(format!("{:.0} fps", info.fps)).strong());
-                ui.small(&info.adapter);
-                ui.small(&info.rt_reason);
-                ui.small(format!(
-                    "internal {}×{}",
-                    info.internal_extent.0, info.internal_extent.1
-                ));
-                ui.separator();
-                egui::Grid::new("passes").num_columns(3).show(ui, |ui| {
-                    ui.small("pass");
-                    ui.small("avg ms");
-                    ui.small("p95 ms");
-                    ui.end_row();
-                    for (name, s) in &info.stats {
-                        ui.small(*name);
-                        ui.small(format!("{:.2}", s.avg_ms));
-                        ui.small(format!("{:.2}", s.p95_ms));
+                ui.add(egui::Label::new(fps).wrap_mode(egui::TextWrapMode::Extend));
+                if detailed {
+                    ui.small(&info.adapter);
+                    ui.small(&info.rt_reason);
+                    ui.small(format!(
+                        "internal {}×{}",
+                        info.internal_extent.0, info.internal_extent.1
+                    ));
+                    ui.separator();
+                    egui::Grid::new("passes").num_columns(3).show(ui, |ui| {
+                        ui.small("pass");
+                        ui.small("avg ms");
+                        ui.small("p95 ms");
                         ui.end_row();
-                    }
-                    ui.label(egui::RichText::new("GPU frame").strong());
-                    ui.label(egui::RichText::new(format!("{:.2}", info.total.avg_ms)).strong());
-                    ui.label(egui::RichText::new(format!("{:.2}", info.total.p95_ms)).strong());
-                    ui.end_row();
-                });
+                        for (name, s) in &info.stats {
+                            ui.small(*name);
+                            ui.small(format!("{:.2}", s.avg_ms));
+                            ui.small(format!("{:.2}", s.p95_ms));
+                            ui.end_row();
+                        }
+                        ui.small("GPU frame");
+                        ui.small(format!("{:.2}", info.total.avg_ms));
+                        ui.small(format!("{:.2}", info.total.p95_ms));
+                        ui.end_row();
+                    });
+                }
                 for e in &info.shader_errors {
                     ui.separator();
                     ui.colored_label(egui::Color32::from_rgb(255, 120, 100), e);

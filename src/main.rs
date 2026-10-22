@@ -218,7 +218,7 @@ impl Gfx {
                 ui::settings_panel(ctx, params, rt);
             }
             if params.show_overlay {
-                ui::overlay(ctx, &info);
+                ui::overlay(ctx, &info, params.show_timings);
             } else if !info.shader_errors.is_empty() {
                 ui::shader_errors(ctx, &info.shader_errors);
             }

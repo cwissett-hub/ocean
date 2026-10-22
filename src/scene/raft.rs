@@ -30,9 +30,10 @@ pub const RAFT_SAMPLE_OFFSETS: [Vec3; 9] = [
 /// How far the logs reach below the waterline.
 pub const RAFT_DRAFT_M: f32 = 0.15;
 
-const HEAVE_OMEGA: f32 = 2.2;
-const HEAVE_ZETA: f32 = 0.6;
-const ROLL_ZETA: f32 = 0.8;
+/// A light raft drawing ~15 cm bobs at about sqrt(g / draft) ≈ 8 rad/s: it rides the surface.
+const HEAVE_OMEGA: f32 = 7.0;
+const HEAVE_ZETA: f32 = 0.5;
+const ROLL_ZETA: f32 = 0.5;
 /// Quadratic hull drag along and across the logs (1/m): the raft goes where it points.
 const DRAG_FORWARD: f32 = 0.25;
 const DRAG_LATERAL: f32 = 3.75;
@@ -446,6 +447,42 @@ mod tests {
                 assert!((r.rotation.length() - 1.0).abs() < 1e-3);
             }
         }
+    }
+
+    #[test]
+    fn follows_wave_slope_quickly() {
+        // A wide flat raft is stiff in roll: it takes the slope of the water within a second.
+        let mut r = RaftBody::at(Vec3::ZERO, 0.7);
+        for _ in 0..60 {
+            let mut w = flat();
+            for (s, p) in w.iter_mut().zip(r.sample_points()) {
+                s.height = 0.2 * p.x;
+            }
+            r.step(&w, Vec2::ZERO, &controls(0.0, 0.0, false), &deep, DT);
+        }
+        let tilt = (r.rotation * Vec3::Y).angle_between(Vec3::Y).to_degrees();
+        assert!(tilt > 0.8 * 0.2f32.atan().to_degrees(), "tilt {tilt}° after 1 s");
+    }
+
+    #[test]
+    fn heave_tracks_a_passing_wave_closely() {
+        // 0.3 m, 4 s waves: a light raft rides on the surface, not behind it.
+        let mut r = RaftBody::at(Vec3::ZERO, 0.0);
+        let w = std::f32::consts::TAU / 4.0;
+        let mut worst = 0.0f32;
+        for i in 0..(20.0 / DT) as usize {
+            let t = i as f32 * DT;
+            let mut s = flat();
+            for x in s.iter_mut() {
+                x.height = 0.3 * (w * t).sin();
+                x.velocity.y = 0.3 * w * (w * t).cos();
+            }
+            r.step(&s, Vec2::ZERO, &controls(0.0, 0.0, false), &deep, DT);
+            if t > 8.0 {
+                worst = worst.max((r.position.y - 0.3 * (w * t).sin()).abs());
+            }
+        }
+        assert!(worst < 0.04, "raft strays {worst} m from the surface");
     }
 
     #[test]

@@ -15,13 +15,14 @@ use crate::render::ocean_mesh::{BASE_CELL_M, GRID, LEVELS, OceanMesh};
 use crate::render::particles::{ParticleInputs, ParticleSystem};
 use crate::render::post::{Post, exposure_ev, exposure_multiplier};
 use crate::render::reflect::ReflectionPass;
-use crate::render::rt_scene::{RtPatchConfig, RtScene, patch_origin};
+use crate::render::rt_scene::{MAX_INSTANCES as RT_MAX_INSTANCES, RtPatchConfig, RtScene, instance_list, patch_origin};
 use crate::render::seabed::SeabedMap;
 use crate::render::shade::ShadePass;
 use crate::render::sky::{SkyLuts, sun_direction};
 use crate::scene::buoy::{BuoyBody, build_buoy_mesh};
 use crate::scene::camera::Camera;
 use crate::scene::cameras::{CameraController, CameraMode, FreeFlyInput};
+use crate::scene::mesh::material;
 use crate::scene::raft::{RaftBody, RaftControls};
 use crate::scene::raft_mesh::build_raft_mesh;
 use crate::waves::foam::foam_params;
@@ -137,6 +138,10 @@ pub struct Renderer {
     buoy_body: BuoyBody,
     raft: RaftBody,
     seabed: SeabedMap,
+    /// This frame's ray-tracing instances (mesh, transform, material id).
+    rt_instances: Vec<(MeshHandle, Mat4, u32)>,
+    /// The set of object meshes changed since the RT scene last saw it.
+    rt_meshes_dirty: bool,
     query: WaveQuery,
     /// Latest water samples (raft 9, buoy 5, camera 1) and the heights/time they came from.
     water: Option<[WaterSample; QUERY_POINTS]>,
@@ -342,16 +347,7 @@ impl Renderer {
         let cameras = CameraController::new(&raft);
         let mut reflections = reflections;
         let rt = ctx.rt_available.then(|| {
-            let (vb, ib, indices, vertices) = objects.mesh_geometry(buoy_mesh).expect("buoy mesh");
-            let scene = RtScene::new(
-                ctx,
-                lib,
-                &ocean,
-                (vb, ib, indices),
-                vertices,
-                &seabed,
-                RtPatchConfig::default(),
-            );
+            let scene = RtScene::new(ctx, lib, &ocean, &seabed, RtPatchConfig::default());
             reflections.enable_rt(d, lib, &sky, &uniforms, &gbuffer, &scene);
             scene
         });
@@ -369,6 +365,8 @@ impl Renderer {
             buoy_body: BuoyBody::at(BUOY_HOME),
             raft,
             seabed,
+            rt_instances: Vec::new(),
+            rt_meshes_dirty: true,
             query,
             water: None,
             last_heights: None,
@@ -463,23 +461,27 @@ impl Renderer {
         let cam = self
             .cameras
             .update(dt, &self.raft, params.sun_azimuth_deg, &input.free, &ground);
+        // (stable id, mesh, transform, material id the ray tracer shades the mesh as).
         let mut instances = vec![
-            (1, self.buoy_mesh, self.buoy_body.transform()),
-            (2, self.raft_mesh, self.raft.transform()),
+            (1, self.buoy_mesh, self.buoy_body.transform(), material::BUOY),
+            (2, self.raft_mesh, self.raft.transform(), material::RAFT_WOOD),
         ];
         for (id, isle) in &self.islands {
             let c = self.origin.to_local(isle.desc.center);
             let t = Mat4::from_translation(Vec3::new(c.x, 0.0, c.y));
-            instances.push((*id, isle.mesh, t));
+            instances.push((*id, isle.mesh, t, material::SAND));
             for (k, p) in isle.palms.iter().enumerate() {
                 instances.push((
                     id ^ (0x9E37_79B9_7F4A_7C15u64.wrapping_mul(k as u64 + 1)),
                     self.palm_mesh,
                     t * *p,
+                    material::PALM_TRUNK,
                 ));
             }
         }
-        self.objects.set_instances(&instances);
+        let draw: Vec<_> = instances.iter().map(|&(id, h, t, _)| (id, h, t)).collect();
+        self.objects.set_instances(&draw);
+        self.rt_instances = instances.iter().map(|&(_, h, t, m)| (h, t, m)).collect();
         let mut points = [Vec2::ZERO; QUERY_POINTS];
         points[RAFT_Q..RAFT_Q + 9].copy_from_slice(&self.raft.sample_points());
         points[BUOY_Q..BUOY_Q + 5].copy_from_slice(&self.buoy_body.sample_points());
@@ -501,6 +503,7 @@ impl Renderer {
         for id in self.streamer.take_unloads() {
             if let Some(isle) = self.islands.remove(&id) {
                 self.objects.remove_mesh(isle.mesh);
+                self.rt_meshes_dirty = true;
             }
             self.ready.retain(|r| r.desc.id != id);
         }
@@ -508,6 +511,7 @@ impl Renderer {
         for _ in 0..ISLAND_UPLOADS_PER_FRAME {
             let Some(r) = self.ready.pop_front() else { break };
             let mesh = self.objects.add_mesh(&self.device, &r.mesh);
+            self.rt_meshes_dirty = true;
             if let Some(old) = self.islands.insert(
                 r.desc.id,
                 LiveIsland {
@@ -614,15 +618,18 @@ impl Renderer {
         self.timer.mark(&mut enc, "ocean sim");
         if let Some(rt) = &mut self.rt {
             let origin = patch_origin(cam.position, cam.forward, &rt.config());
-            if let Some((vb, ib, _, _)) = self.objects.mesh_geometry(self.buoy_mesh) {
-                rt.record(
-                    &mut enc,
-                    origin,
-                    self.buoy_body.transform(),
-                    (vb, ib),
-                    self.seabed.params(&self.origin),
-                );
+            if self.rt_meshes_dirty {
+                let mut handles = vec![self.buoy_mesh, self.raft_mesh, self.palm_mesh];
+                handles.extend(self.islands.values().map(|i| i.mesh));
+                let meshes: Vec<_> = handles
+                    .into_iter()
+                    .filter_map(|h| self.objects.mesh_geometry(h).map(|g| (h, g)))
+                    .collect();
+                rt.set_static_meshes(&meshes);
+                self.rt_meshes_dirty = false;
             }
+            let instances = instance_list(&self.rt_instances, cam.position, RT_MAX_INSTANCES - 1);
+            rt.record(&mut enc, origin, &instances, self.seabed.params(&self.origin));
         }
         self.timer.mark(&mut enc, "rt build");
         self.particles.record(

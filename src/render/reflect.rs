@@ -256,6 +256,7 @@ impl ReflectionPass {
                     },
                 ),
                 entry(8, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+                entry(9, tex(wgpu::TextureSampleType::Float { filterable: false })),
             ],
         });
         let pl = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -387,6 +388,10 @@ fn rt_group(
             wgpu::BindGroupEntry {
                 binding: 8,
                 resource: B::Sampler(scene.wave_sampler()),
+            },
+            wgpu::BindGroupEntry {
+                binding: 9,
+                resource: B::TextureView(scene.seabed()),
             },
         ],
     })

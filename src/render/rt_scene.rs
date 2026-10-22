@@ -1,17 +1,84 @@
 //! The ray-tracing scene: a near-field patch of the displaced waves (rebuilt or refitted every
-//! frame) and the buoy, in one TLAS.
+//! frame) and every object mesh (buoy, raft, palms, islands), in one TLAS.
+
+use std::collections::HashMap;
 
 use glam::{Mat4, Vec2, Vec3};
 use wgpu::util::DeviceExt;
 
 use crate::gpu::adapter::GpuContext;
 use crate::gpu::shaders::ShaderLibrary;
+use crate::render::object_pass::MeshHandle;
 use crate::waves::gpu_ocean::GpuOcean;
 use crate::waves::spectrum::{CASCADE_SIZES_M, cascade_band};
 
-/// TLAS instance masks / custom data.
-pub const PATCH_ID: u32 = 0;
-pub const BUOY_ID: u32 = 1;
+/// TLAS custom data is the material id (scene::mesh::material); the wave patch is water.
+pub const PATCH_ID: u32 = crate::scene::mesh::material::WATER;
+/// Instance masks: the patch is traced one-sided, objects two-sided in their own query.
+const PATCH_MASK: u8 = 0x01;
+const OBJECT_MASK: u8 = 0x02;
+pub const MAX_INSTANCES: usize = 1024;
+
+/// The `cap` instances nearest `focus`, nearest first (the TLAS has room for MAX_INSTANCES).
+pub fn instance_list(instances: &[(MeshHandle, Mat4, u32)], focus: Vec3, cap: usize) -> Vec<(MeshHandle, Mat4, u32)> {
+    let mut v = instances.to_vec();
+    let dist = |m: &Mat4| m.w_axis.truncate().distance_squared(focus);
+    v.sort_by(|a, b| dist(&a.1).total_cmp(&dist(&b.1)));
+    v.truncate(cap);
+    v
+}
+
+/// Which meshes have a BLAS, keyed by mesh handle and remembering the geometry (`K`) each was
+/// built from, since a handle freed by an island that streamed out can be reused by another.
+pub struct BlasRegistry<K, B> {
+    entries: HashMap<MeshHandle, (K, B)>,
+}
+
+impl<K, B> Default for BlasRegistry<K, B> {
+    fn default() -> Self {
+        BlasRegistry {
+            entries: HashMap::new(),
+        }
+    }
+}
+
+impl<K: PartialEq + Clone, B> BlasRegistry<K, B> {
+    /// Makes the live set exactly `meshes`: drops the rest, builds (via `build`) the new or
+    /// changed ones and returns their handles.
+    pub fn sync(&mut self, meshes: &[(MeshHandle, K)], mut build: impl FnMut(MeshHandle, &K) -> B) -> Vec<MeshHandle> {
+        self.entries
+            .retain(|h, (k, _)| meshes.iter().any(|(mh, mk)| mh == h && mk == k));
+        let mut new = Vec::new();
+        for (h, k) in meshes {
+            if !self.entries.contains_key(h) {
+                self.entries.insert(*h, (k.clone(), build(*h, k)));
+                new.push(*h);
+            }
+        }
+        new
+    }
+
+    pub fn get(&self, h: MeshHandle) -> Option<&B> {
+        self.entries.get(&h).map(|(_, b)| b)
+    }
+
+    pub fn live(&self) -> Vec<MeshHandle> {
+        let mut v: Vec<MeshHandle> = self.entries.keys().copied().collect();
+        v.sort_by_key(|h| h.0);
+        v
+    }
+}
+
+/// A mesh's (vertices, indices, index count, vertex count), as ObjectPass::mesh_geometry.
+pub type MeshGeometry<'a> = (&'a wgpu::Buffer, &'a wgpu::Buffer, u32, u32);
+
+/// An object mesh's BLAS and the geometry it is built from.
+struct ObjectBlas {
+    blas: wgpu::Blas,
+    size: wgpu::BlasTriangleGeometrySizeDescriptor,
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+}
 /// Full BLAS rebuild cadence (refits in between slowly degrade the BVH).
 const REBUILD_EVERY: u32 = 60;
 
@@ -80,14 +147,19 @@ pub struct RtScene {
     bind_group: wgpu::BindGroup,
     patch_size: wgpu::BlasTriangleGeometrySizeDescriptor,
     patch_blas: wgpu::Blas,
-    buoy_size: wgpu::BlasTriangleGeometrySizeDescriptor,
-    buoy_blas: wgpu::Blas,
-    buoy_built: bool,
+    /// A BLAS per object mesh (raft, buoy, palm, each streamed-in island).
+    objects: BlasRegistry<wgpu::Buffer, ObjectBlas>,
+    /// Object BLASes created but not yet built.
+    unbuilt: Vec<MeshHandle>,
+    /// TLAS slots filled last frame.
+    instances_used: usize,
     tlas: wgpu::Tlas,
     since_rebuild: u32,
     last_origin: Option<Vec2>,
     derivatives: wgpu::TextureView,
     sampler: wgpu::Sampler,
+    /// The seabed map (terrain normals for island hits).
+    seabed: wgpu::TextureView,
 }
 
 fn patch_blas(d: &wgpu::Device, size: &wgpu::BlasTriangleGeometrySizeDescriptor) -> wgpu::Blas {
@@ -114,8 +186,6 @@ impl RtScene {
         ctx: &GpuContext,
         lib: &ShaderLibrary,
         ocean: &GpuOcean,
-        buoy: (&wgpu::Buffer, &wgpu::Buffer, u32),
-        buoy_vertices: u32,
         seabed: &crate::render::seabed::SeabedMap,
         cfg: RtPatchConfig,
     ) -> RtScene {
@@ -192,26 +262,9 @@ impl RtScene {
             index_count: Some(idx.len() as u32),
             flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
         };
-        let buoy_size = wgpu::BlasTriangleGeometrySizeDescriptor {
-            vertex_format: wgpu::VertexFormat::Float32x3,
-            vertex_count: buoy_vertices,
-            index_format: Some(wgpu::IndexFormat::Uint32),
-            index_count: Some(buoy.2),
-            flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
-        };
-        let buoy_blas = d.create_blas(
-            &wgpu::CreateBlasDescriptor {
-                label: Some("buoy blas"),
-                flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
-                update_mode: wgpu::AccelerationStructureUpdateMode::Build,
-            },
-            wgpu::BlasGeometrySizeDescriptors::Triangles {
-                descriptors: vec![buoy_size.clone()],
-            },
-        );
         let tlas = d.create_tlas(&wgpu::CreateTlasDescriptor {
             label: Some("scene tlas"),
-            max_instances: 2,
+            max_instances: MAX_INSTANCES as u32,
             flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
             update_mode: wgpu::AccelerationStructureUpdateMode::Build,
         });
@@ -226,15 +279,52 @@ impl RtScene {
             pipeline,
             bind_group,
             patch_size,
-            buoy_size,
-            buoy_blas,
-            buoy_built: false,
+            objects: BlasRegistry::default(),
+            unbuilt: Vec::new(),
+            instances_used: 0,
             tlas,
             since_rebuild: 0,
             last_origin: None,
             derivatives: ocean.derivatives_view.clone(),
+            seabed: seabed.view().clone(),
             sampler,
         }
+    }
+
+    /// The object meshes that can appear in `record`'s instances: (handle, (vertices, indices,
+    /// index count, vertex count)), vertex stride 32. BLASes are created for new meshes (built
+    /// in the next `record`) and freed for meshes no longer listed.
+    pub fn set_static_meshes(&mut self, meshes: &[(MeshHandle, MeshGeometry)]) {
+        let keys: Vec<(MeshHandle, wgpu::Buffer)> = meshes.iter().map(|(h, g)| (*h, g.0.clone())).collect();
+        let d = &self.device;
+        let new = self.objects.sync(&keys, |h, _| {
+            let (vb, ib, index_count, vertex_count) = meshes.iter().find(|(mh, _)| *mh == h).expect("listed").1;
+            let size = wgpu::BlasTriangleGeometrySizeDescriptor {
+                vertex_format: wgpu::VertexFormat::Float32x3,
+                vertex_count,
+                index_format: Some(wgpu::IndexFormat::Uint32),
+                index_count: Some(index_count),
+                flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
+            };
+            let blas = d.create_blas(
+                &wgpu::CreateBlasDescriptor {
+                    label: Some("object blas"),
+                    flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
+                    update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+                },
+                wgpu::BlasGeometrySizeDescriptors::Triangles {
+                    descriptors: vec![size.clone()],
+                },
+            );
+            ObjectBlas {
+                blas,
+                size,
+                vertices: vb.clone(),
+                indices: ib.clone(),
+            }
+        });
+        self.unbuilt.retain(|h| keys.iter().any(|(k, _)| k == h));
+        self.unbuilt.extend(new);
     }
 
     pub fn config(&self) -> RtPatchConfig {
@@ -259,13 +349,18 @@ impl RtScene {
         &self.sampler
     }
 
-    /// Writes this frame's patch at `origin`, refits/rebuilds its BLAS and rebuilds the TLAS.
+    pub fn seabed(&self) -> &wgpu::TextureView {
+        &self.seabed
+    }
+
+    /// Writes this frame's patch at `origin`, refits/rebuilds its BLAS, builds any new object
+    /// BLASes and rebuilds the TLAS from `instances` (mesh, transform, material id; the caller
+    /// orders them nearest first, see `instance_list`).
     pub fn record(
         &mut self,
         enc: &mut wgpu::CommandEncoder,
         origin: Vec2,
-        buoy: Mat4,
-        buoy_geometry: (&wgpu::Buffer, &wgpu::Buffer),
+        instances: &[(MeshHandle, Mat4, u32)],
         seabed: [f32; 4],
     ) {
         let p = PatchParams {
@@ -304,34 +399,49 @@ impl RtScene {
             transform_buffer: None,
             transform_buffer_offset: None,
         };
-        let buoy_geo = wgpu::BlasTriangleGeometry {
-            size: &self.buoy_size,
-            vertex_buffer: buoy_geometry.0,
-            first_vertex: 0,
-            vertex_stride: 32,
-            index_buffer: Some(buoy_geometry.1),
-            first_index: Some(0),
-            transform_buffer: None,
-            transform_buffer_offset: None,
-        };
         let identity = instance_transform(Mat4::IDENTITY);
-        self.tlas[0] = Some(wgpu::TlasInstance::new(&self.patch_blas, identity, PATCH_ID, 0x01));
-        self.tlas[1] = Some(wgpu::TlasInstance::new(
-            &self.buoy_blas,
-            instance_transform(buoy),
-            BUOY_ID,
-            0x02,
+        self.tlas[0] = Some(wgpu::TlasInstance::new(
+            &self.patch_blas,
+            identity,
+            PATCH_ID,
+            PATCH_MASK,
         ));
+        let mut used = 1;
+        for (h, transform, material) in instances.iter().take(MAX_INSTANCES - 1) {
+            if let Some(o) = self.objects.get(*h) {
+                self.tlas[used] = Some(wgpu::TlasInstance::new(
+                    &o.blas,
+                    instance_transform(*transform),
+                    *material,
+                    OBJECT_MASK,
+                ));
+                used += 1;
+            }
+        }
+        for i in used..self.instances_used {
+            self.tlas[i] = None;
+        }
+        self.instances_used = used;
         let mut entries = vec![wgpu::BlasBuildEntry {
             blas: &self.patch_blas,
             geometry: wgpu::BlasGeometries::TriangleGeometries(vec![patch_geo]),
         }];
-        if !self.buoy_built {
-            entries.push(wgpu::BlasBuildEntry {
-                blas: &self.buoy_blas,
-                geometry: wgpu::BlasGeometries::TriangleGeometries(vec![buoy_geo]),
-            });
-            self.buoy_built = true;
+        for h in self.unbuilt.drain(..) {
+            if let Some(o) = self.objects.get(h) {
+                entries.push(wgpu::BlasBuildEntry {
+                    blas: &o.blas,
+                    geometry: wgpu::BlasGeometries::TriangleGeometries(vec![wgpu::BlasTriangleGeometry {
+                        size: &o.size,
+                        vertex_buffer: &o.vertices,
+                        first_vertex: 0,
+                        vertex_stride: 32,
+                        index_buffer: Some(&o.indices),
+                        first_index: Some(0),
+                        transform_buffer: None,
+                        transform_buffer_offset: None,
+                    }]),
+                });
+            }
         }
         enc.build_acceleration_structures(entries.iter(), std::iter::once(&self.tlas));
     }
@@ -387,6 +497,53 @@ mod tests {
         let moved = patch_origin(Vec3::new(10.0 + 0.3 * cfg.cell(), 18.0, 10.0), fwd(30.0), &cfg);
         let d = ((moved - base) / cfg.cell()).abs();
         assert!(d.max_element() <= 1.0 + 1e-3, "{d}");
+    }
+
+    #[test]
+    fn instance_list_respects_capacity() {
+        use crate::render::object_pass::MeshHandle;
+        let at = |x: f32| Mat4::from_translation(Vec3::new(x, 0.0, 0.0));
+        let all: Vec<_> = (0..50)
+            .map(|i| (MeshHandle(i), at(500.0 - 10.0 * i as f32), 4))
+            .collect();
+        let kept = instance_list(&all, Vec3::ZERO, 20);
+        assert_eq!(kept.len(), 20);
+        // The 20 nearest (handles 30..50, at 200..10 m), nearest first.
+        assert_eq!(kept[0].0, MeshHandle(49));
+        assert!(
+            kept.iter().all(|k| k.0.0 >= 30),
+            "{:?}",
+            kept.iter().map(|k| k.0).collect::<Vec<_>>()
+        );
+        assert_eq!(instance_list(&all[..5], Vec3::ZERO, 20).len(), 5);
+    }
+
+    #[test]
+    fn blas_registry_frees_unloaded_islands() {
+        use crate::render::object_pass::MeshHandle;
+        use std::rc::Rc;
+        let alive = Rc::new(());
+        let mut reg: BlasRegistry<u64, Rc<()>> = BlasRegistry::default();
+        let mut built = Vec::new();
+        let mut build = |h: MeshHandle, _: &u64| {
+            built.push(h);
+            alive.clone()
+        };
+        reg.sync(
+            &[(MeshHandle(0), 10), (MeshHandle(1), 11), (MeshHandle(2), 12)],
+            &mut build,
+        );
+        assert_eq!(reg.live(), vec![MeshHandle(0), MeshHandle(1), MeshHandle(2)]);
+        assert_eq!(Rc::strong_count(&alive), 4);
+        // Island 1 streams out: its BLAS is dropped, the others are not rebuilt.
+        reg.sync(&[(MeshHandle(0), 10), (MeshHandle(2), 12)], &mut build);
+        assert_eq!(reg.live(), vec![MeshHandle(0), MeshHandle(2)]);
+        assert_eq!(Rc::strong_count(&alive), 3);
+        // A new island reuses handle 2 with different geometry: rebuilt.
+        reg.sync(&[(MeshHandle(0), 10), (MeshHandle(2), 99)], &mut build);
+        assert_eq!(Rc::strong_count(&alive), 3);
+        assert!(reg.get(MeshHandle(1)).is_none() && reg.get(MeshHandle(2)).is_some());
+        assert_eq!(built, vec![MeshHandle(0), MeshHandle(1), MeshHandle(2), MeshHandle(2)]);
     }
 
     #[test]

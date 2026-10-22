@@ -403,7 +403,15 @@ impl ApplicationHandler for App {
 /// `--bench N [--bench-out file]` renders N frames uncapped and writes a JSON report.
 /// `--panel` opens the settings panel at start; `--freeze-time S` pins the waves at time S;
 /// `--start-at x,z[,heading]` puts the raft at a world position.
-fn parse_args() -> anyhow::Result<(OceanParams, Option<Bench>, bool, Option<f32>, Option<(f64, f64, f32)>)> {
+struct CliArgs {
+    params: OceanParams,
+    bench: Option<Bench>,
+    panel: bool,
+    freeze: Option<f32>,
+    start_at: Option<(f64, f64, f32)>,
+}
+
+fn parse_args() -> anyhow::Result<CliArgs> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut overrides = Vec::new();
     let mut bench_frames = None;
@@ -439,11 +447,23 @@ fn parse_args() -> anyhow::Result<(OceanParams, Option<Bench>, bool, Option<f32>
             cpu_ms: Vec::new(),
         }
     });
-    Ok((params, bench, panel, freeze, start_at))
+    Ok(CliArgs {
+        params,
+        bench,
+        panel,
+        freeze,
+        start_at,
+    })
 }
 
 fn main() -> anyhow::Result<()> {
-    let (params, bench, panel, freeze, start_at) = parse_args()?;
+    let CliArgs {
+        params,
+        bench,
+        panel,
+        freeze,
+        start_at,
+    } = parse_args()?;
     let el = EventLoop::new()?;
     // Wait, not Poll: request_redraw keeps frames coming, and a minimised window (which
     // renders nothing) then sleeps instead of spinning a core.

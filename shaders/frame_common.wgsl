@@ -16,6 +16,8 @@ struct Frame {
     seabed: vec4<f32>,      // seabed map: local corner x, z, texel m, resolution (seabed_common.wgsl)
     jitter: vec4<f32>,      // TAA sub-pixel offset of this frame's projection, pixels (x right, y down)
     wake: vec4<f32>,        // raft wake grid: origin cell x, z, cell m, resolution (wake_common.wgsl)
+    raft_inv: mat4x4<f32>,  // world → raft frame (wood grain, wet line)
+    raft_wet: array<vec4<f32>, 3>, // wet line per raft sample column (scene::wetness), raft-frame y
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;

@@ -27,6 +27,7 @@ use crate::scene::cameras::{CameraController, CameraMode, FreeFlyInput};
 use crate::scene::mesh::material;
 use crate::scene::raft::{RaftBody, RaftControls, raft_emissions};
 use crate::scene::raft_mesh::build_raft_mesh;
+use crate::scene::wetness::RaftWetness;
 use crate::waves::foam::foam_params;
 use crate::waves::gpu_ocean::GpuOcean;
 use crate::waves::query::{WaterSample, WaveQuery};
@@ -71,6 +72,10 @@ struct FrameUniforms {
     jitter: [f32; 4],
     /// WakeSim::params.
     wake: [f32; 4],
+    /// World (local) → raft frame, for the logs' wood grain and wet line.
+    raft_inv: [[f32; 4]; 4],
+    /// RaftWetness::line, packed 9 into 12.
+    raft_wet: [[f32; 4]; 3],
 }
 
 /// The parameters that change the wave spectrum (rebuilding it costs a few milliseconds).
@@ -147,6 +152,7 @@ pub struct Renderer {
     taa: TaaPass,
     /// The raft's own waves.
     wake: WakeSim,
+    wetness: RaftWetness,
     /// Frames rendered (drives the TAA jitter sequence).
     frame_index: u32,
     taa_was_on: bool,
@@ -393,6 +399,7 @@ impl Renderer {
             buoy_body: BuoyBody::at(BUOY_HOME),
             raft,
             seabed,
+            wetness: RaftWetness::default(),
             wake,
             taa,
             frame_index: 0,
@@ -496,6 +503,8 @@ impl Renderer {
             let raft_w: [WaterSample; 9] = std::array::from_fn(|i| s[RAFT_Q + i]);
             let buoy_w: [WaterSample; 5] = std::array::from_fn(|i| s[BUOY_Q + i]);
             self.raft.step(&raft_w, wind, &controls, &terrain, dt.min(0.25));
+            self.wetness
+                .update(&RaftWetness::water_levels(&self.raft, &raft_w), dt.min(0.25));
             for r in raft_emissions(&self.raft, &raft_w, dt.min(0.25)) {
                 self.particles.push(r);
             }
@@ -704,6 +713,15 @@ impl Renderer {
             seabed: self.seabed.params(&self.origin),
             jitter: [j.x, j.y, 0.0, 0.0],
             wake: self.wake.params(),
+            raft_inv: self.raft.transform().inverse().to_cols_array_2d(),
+            raft_wet: {
+                let l = self.wetness.line;
+                [
+                    [l[0], l[1], l[2], l[3]],
+                    [l[4], l[5], l[6], l[7]],
+                    [l[8], 0.0, 0.0, 0.0],
+                ]
+            },
         };
         self.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
 

@@ -226,3 +226,16 @@ Material ids (G-buffer `material.g = id / 8`, decode `round(g * 8)`; `material.b
 - [ ] **Step 2–3:** FAIL → implement → PASS.
 - [ ] **Step 4:** `cargo fmt`, clippy, full `cargo test` (record the total, not the doc-test line); release build; dist; foreground bench for chase and high: **p95 ≤ 12 ms** else reduce (island LOD0 cell → 1 m, palm count, RT instance distance) and report.
 - [ ] **Step 5:** README: raft controls, cameras, islands; commit, push, tag **v0.2.0** (with the user's go-ahead on tagging).
+
+---
+
+### Task 11: Water look polish (user request, 2026-10-22)
+
+User feedback on v1/v2 screenshots: the water "looks too opaque and sort of matte". After Task 10, diagnose by A/B screenshots against real sunset-sea references and fix — candidates to investigate, not a fixed recipe:
+
+- Reflection strength/sharpness: is the sky reflection too weak or blurred (roughness from unresolved slope variance too high; footprint fade too aggressive; half-res reflection upsample softening it)?
+- Transparency: near-camera water should read as clear — deep-water single scattering (`deep_water_upwelling`) may be too bright/flat; add view-dependent transmission (light paths through wave crests, Fresnel-weighted refraction of the dark depths) and contrast between faces facing the sky vs away.
+- Specular: sharper, brighter sun glints at the near field (micro-facet variance per pixel), HDR bloom on glints.
+- Normal detail: finer capillary detail near the camera (a detail normal map or the finest cascade not faded so early).
+
+Verification: side-by-side screenshots before/after shown to the user; bench still ≤ 12 ms p95. Tests for any pure functions changed (e.g. roughness/footprint functions).

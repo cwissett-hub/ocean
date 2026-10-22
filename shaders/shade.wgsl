@@ -30,45 +30,7 @@ fn vs_full(@builtin(vertex_index) i: u32) -> VsOut {
 }
 
 
-// Sun glints (mirrors render::water_optics::glint): the glitter path is made of separate
-// sparkles off capillary facets about 2 cm across. Each facet-sized cell, anchored to the
-// water, gets a random brightness with mean exactly 1 — so the path keeps its width and
-// brightness — re-rolled every few tenths of a second as the ripples move. A pixel covering
-// many facets sees their average, so the contrast fades with the footprint.
-const GLINT_FACET_M: f32 = 0.02;
-const GLINT_POWER: f32 = 8.0;
-
-fn glint_hash(c: vec3<f32>) -> f32 {
-    var q = fract(c * vec3<f32>(0.1031, 0.1030, 0.0973));
-    q += dot(q, q.yzx + 33.33);
-    return fract((q.x + q.y) * q.z);
-}
-
-fn glint(xz: vec2<f32>, footprint: f32) -> f32 {
-    let amp = clamp(GLINT_FACET_M / max(footprint, 1e-6), 0.0, 1.0);
-    if (amp < 0.01) {
-        return 1.0;
-    }
-    let uv = xz / GLINT_FACET_M;
-    let cell = floor(uv);
-    // Cells twinkle out of step with each other.
-    let slot = floor(frame.cam_pos.w * 5.0 + glint_hash(vec3<f32>(cell, 7.0)) * 4.0);
-    let v = glint_hash(vec3<f32>(cell, slot));
-    let sparkle = (GLINT_POWER + 1.0) * pow(v, GLINT_POWER);
-    // Each sparkle is a round dot somewhere in its cell (never overhanging it).
-    let centre = GLINT_RADIUS + (1.0 - 2.0 * GLINT_RADIUS) * vec2<f32>(glint_hash(vec3<f32>(cell, slot + 0.5)), glint_hash(vec3<f32>(cell, slot + 0.25)));
-    let dot_shape = glint_shape(length(uv - cell - centre));
-    return 1.0 + amp * (sparkle * dot_shape - 1.0);
-}
-
-// A glint's brightness d cells from its centre, scaled so its mean over the cell is 1.
-const GLINT_RADIUS: f32 = 0.35;
-fn glint_shape(d: f32) -> f32 {
-    let x = max(1.0 - (d / GLINT_RADIUS) * (d / GLINT_RADIUS), 0.0);
-    return x * x / (PI * GLINT_RADIUS * GLINT_RADIUS / 3.0);
-}
-
-fn shade_water(px: vec2<f32>, p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam: f32, traced: vec4<f32>, footprint: f32) -> vec3<f32> {
+fn shade_water(px: vec2<f32>, p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam: f32, traced: vec4<f32>) -> vec3<f32> {
     let to_eye = frame.cam_pos.xyz - p;
     let dist = length(to_eye);
     let v = to_eye / dist;
@@ -88,15 +50,14 @@ fn shade_water(px: vec2<f32>, p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam
     let f = fresnel(n_v);
     let reflected = mix(sky_radiance(r), traced.rgb, traced.a) * f;
 
-    // Sun specular: microfacet GGX over the unresolved slopes.
+    // Sun specular: microfacet Beckmann over the unresolved slopes.
     let alpha2 = clamp(2.0 * variance, 1e-4, 1.0);
     let h = normalize(v + sun);
     let n_l = dot(n, sun);
     var spec = vec3<f32>(0.0);
     if (n_l > 0.0) {
         let g = smith_g1(n_v, alpha2) * smith_g1(n_l, alpha2);
-        spec = e_sun * ggx(max(dot(n, h), 0.0), alpha2) * g * fresnel(dot(v, h)) / (4.0 * n_v);
-        spec *= glint(p.xz, footprint);
+        spec = e_sun * beckmann(max(dot(n, h), 0.0), max(variance, 5e-5)) * g * fresnel(dot(v, h)) / (4.0 * n_v);
     }
 
     // Light scattered back up out of the water column (infinitely deep), and the light that
@@ -132,11 +93,14 @@ fn shade_water(px: vec2<f32>, p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam
     let bottom_lit = bottom / PI * e_in * exp(-ext * depth) * seen / WATER_N2;
     let body = (1.0 - f) * (bottom_lit + column * (vec3<f32>(1.0) - seen));
 
-    // Sunlight through thin wave crests toward the eye: the green-gold glow when looking
-    // into a low sun.
-    let crest = clamp(p.y / max(frame.misc.y * 0.5, 0.05), 0.0, 1.0);
-    let toward_sun = pow(clamp(dot(-v, normalize(vec3<f32>(sun.x, 0.0, sun.z))), 0.0, 1.0), 4.0);
-    let sss = e_sun * CREST_TINT * crest * crest * toward_sun * (1.0 - f) * 0.12 * max(sun.y + 0.1, 0.0);
+    // Subsurface scattering (the stylised-physical model of the Atlas / Sea of Thieves water
+    // talks): light scattered inside the wave bodies. Back-lit crests glow when looking toward
+    // the sun — stronger on tall crests and on faces turned away from it — the water facing the
+    // eye carries a softer teal glow, and sunlit faces get a little diffuse lift.
+    let height = clamp(p.y / max(frame.misc.y, 0.1) + 0.5, 0.0, 1.5);
+    let back = height * height * pow(max(dot(sun, -v), 0.0), 4.0) * pow(0.5 - 0.5 * dot(sun, n), 3.0);
+    let front = pow(max(dot(v, n), 0.0), 2.0);
+    let sss = (1.0 - f) * SSS_TINT * (e_sun * (SSS_BACK * back + SSS_SUN * max(n_l, 0.0)) + e_in * SSS_FRONT * front);
 
     // Foam: a bright diffuse layer that hides the reflection and the water beneath it.
     let foam_light = FOAM_ALBEDO / PI * (e_sun * max(n_l, 0.0) + sky_irradiance());
@@ -148,9 +112,6 @@ fn shade_water(px: vec2<f32>, p: vec3<f32>, n_in: vec3<f32>, variance: f32, foam
 fn fs_shade(in: VsOut) -> @location(0) vec4<f32> {
     let px = vec2<i32>(in.pos.xy);
     let depth = textureLoad(depth_tex, px, 0);
-    // Footprint of this pixel on the surface, m (derivatives need uniform control flow).
-    let p = world_from_depth(in.pos.xy, max(depth, 1e-7));
-    let footprint = max(length(dpdx(p.xz)), length(dpdy(p.xz)));
     if (depth <= 0.0) {
         let dir = view_dir_for_pixel(in.pos.xy);
         if (dir.y < 0.0) {
@@ -160,6 +121,7 @@ fn fs_shade(in: VsOut) -> @location(0) vec4<f32> {
         }
         return vec4<f32>(sky_radiance(dir) + sun_disc(dir), 1.0);
     }
+    let p = world_from_depth(in.pos.xy, depth);
     let nv = textureLoad(normal_tex, px, 0);
     let foam = textureLoad(material_tex, px, 0).r;
     let traced = textureSampleLevel(reflection_tex, lin, in.pos.xy * frame.resolution.zw, 0.0);
@@ -168,6 +130,6 @@ fn fs_shade(in: VsOut) -> @location(0) vec4<f32> {
     if (id != MAT_WATER) {
         return vec4<f32>(shade_object(p, nv.xyz, id, mat.b), 1.0);
     }
-    return vec4<f32>(shade_water(in.pos.xy, p, nv.xyz, nv.w, foam, traced, footprint), 1.0);
+    return vec4<f32>(shade_water(in.pos.xy, p, nv.xyz, nv.w, foam, traced), 1.0);
 }
 

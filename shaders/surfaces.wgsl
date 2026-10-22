@@ -7,11 +7,24 @@ const WATER_ABSORB: vec3<f32> = vec3<f32>(0.45, 0.065, 0.025);
 const WATER_SCATTER: vec3<f32> = vec3<f32>(0.012, 0.018, 0.026);
 // n² for seawater: radiance leaving the water is divided by it.
 const WATER_N2: f32 = 1.78;
-const CREST_TINT: vec3<f32> = vec3<f32>(0.08, 0.55, 0.42);
+// Subsurface scattering (shade.wgsl): tint of light that has travelled through wave bodies,
+// and the strength of its back-lit, sunlit and view-facing parts.
+const SSS_TINT: vec3<f32> = vec3<f32>(0.03, 0.42, 0.52);
+const SSS_BACK: f32 = 0.8;
+const SSS_SUN: f32 = 0.015;
+const SSS_FRONT: f32 = 0.09;
 const FOAM_ALBEDO: f32 = 0.8;
 
 fn fresnel(cos_t: f32) -> f32 {
     return WATER_F0 + (1.0 - WATER_F0) * pow(1.0 - clamp(cos_t, 0.0, 1.0), 5.0);
+}
+
+// Beckmann distribution for mean-square slope m2: Gaussian slopes, as Cox–Munk measured on
+// the sea. Same width as GGX but without its long tails, which spread the sun into a milky
+// haze around the glitter path.
+fn beckmann(n_h: f32, m2: f32) -> f32 {
+    let c2 = max(n_h * n_h, 1e-4);
+    return exp((c2 - 1.0) / (m2 * c2)) / (PI * m2 * c2 * c2);
 }
 
 // GGX distribution with α² = 2σ² (matching Beckmann slope variance σ²).
